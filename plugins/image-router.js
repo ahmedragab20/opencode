@@ -3,16 +3,46 @@
  * router agents and replaces them with text markers so the model can
  * delegate to the vision agent instead of trying to process images itself.
  *
- * OpenCode's part schema requires part.id to start with "prt" and
- * part.messageID to start with "msg" (or be absent). Earlier versions of
+ * OpenCode TUI embeds pasted clipboard images as `data:<mime>;base64,…`
+ * URLs and never writes them to disk. The vision subagent relies on a
+ * `clipboard-*.png` filename lookup under known temp roots, which fails
+ * because the file does not exist there. This plugin decodes the data URL,
+ * writes the image to `~/.local/share/opencode/tool-output/` (which the
+ * vision agent has explicit read permission for via `external_directory`),
+ * and emits a marker carrying both the basename and the absolute path so
+ * vision can recover the bytes deterministically.
+ *
+ * OpenCode's part schema also requires `part.id` to start with `prt` and
+ * `part.messageID` to start with `msg` (or be absent). Earlier versions of
  * this plugin prepended "img-" to the original id, producing
- * "img-prt_..." ids and triggering SchemaError on every paste. Keep the
- * original prt_-prefixed id when one exists, and only generate a fresh id
- * when the replacement does not have one.
+ * "img-prt_..." ids and triggering SchemaError on every paste. The plugin
+ * preserves the original `prt_…` id when one exists, and only generates a
+ * fresh id when the replacement does not have one.
  */
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const ROUTER_AGENT_IDS = new Set(["router", "router-paid"]);
 const PRT_PREFIX = "prt_";
+const TOOL_OUTPUT_DIR = path.join(
+  os.homedir(),
+  ".local",
+  "share",
+  "opencode",
+  "tool-output",
+);
+
+const MIME_TO_EXT = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/bmp": "bmp",
+};
 
 function isValidPrtID(value) {
   return typeof value === "string" && value.startsWith(PRT_PREFIX);
@@ -25,6 +55,85 @@ function isValidMsgID(value) {
 function freshPrtID(prefix) {
   const rand = Math.random().toString(36).slice(2, 8);
   return PRT_PREFIX + prefix + "_" + Date.now().toString(36) + "_" + rand;
+}
+
+function extForMime(mime) {
+  return MIME_TO_EXT[mime] || "bin";
+}
+
+function uniqHash() {
+  return (
+    Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
+  );
+}
+
+function decodeDataURL(url) {
+  const match = /^data:([^;,]+)(?:;charset=[^;,]+)?(;base64)?,(.*)$/s.exec(url);
+  if (!match) return null;
+  const dataMime = match[1];
+  const isBase64 = match[2] === ";base64";
+  const payload = match[3];
+  let bytes;
+  try {
+    bytes = isBase64
+      ? Buffer.from(payload, "base64")
+      : Buffer.from(decodeURIComponent(payload), "utf8");
+  } catch (_e) {
+    return null;
+  }
+  return { mime: dataMime, bytes };
+}
+
+function saveToToolOutput(mime, bytes) {
+  try {
+    const ext = extForMime(mime);
+    const filename = "clipboard-" + uniqHash() + "." + ext;
+    fs.mkdirSync(TOOL_OUTPUT_DIR, { recursive: true });
+    const filepath = path.join(TOOL_OUTPUT_DIR, filename);
+    fs.writeFileSync(filepath, bytes);
+    return { filename, filepath };
+  } catch (_e) {
+    return null;
+  }
+}
+
+function summarizeReplace(part) {
+  const filename = part.filename || "pasted-image";
+  const ext = extForMime(part.mime);
+
+  let savedFilename = filename;
+  let savedPath = null;
+
+  const url = typeof part.url === "string" ? part.url : "";
+  if (url.startsWith("data:")) {
+    const decoded = decodeDataURL(url);
+    if (decoded && decoded.bytes.length > 0) {
+      const saved = saveToToolOutput(decoded.mime || part.mime, decoded.bytes);
+      if (saved) {
+        savedFilename = saved.filename;
+        savedPath = saved.filepath;
+      }
+    }
+  } else if (url.startsWith("file://")) {
+    try {
+      const real = fileURLToPath(url);
+      savedFilename = path.basename(real);
+      savedPath = real;
+    } catch (_e) {
+      savedPath = null;
+    }
+  }
+
+  const marker =
+    "[IMAGE DETECTED: " +
+    savedFilename +
+    " (" +
+    part.mime +
+    ")" +
+    (savedPath ? " at " + savedPath : "") +
+    "]";
+
+  return { marker, savedFilename, savedPath };
 }
 
 /**
@@ -56,15 +165,17 @@ const ImageRouterPlugin = async () => {
             if (part.type !== "file") continue;
             if (typeof part.mime !== "string" || !part.mime.startsWith("image/")) continue;
 
-            const filename = part.filename || "pasted-image";
-            const partMessageID = isValidMsgID(part.messageID) ? part.messageID : parentMessageID;
+            const { marker } = summarizeReplace(part);
+            const partMessageID = isValidMsgID(part.messageID)
+              ? part.messageID
+              : parentMessageID;
 
             parts[i] = {
               id: isValidPrtID(part.id) ? part.id : freshPrtID("imgrpl"),
               sessionID: sessionID,
               messageID: partMessageID,
               type: "text",
-              text: "[IMAGE DETECTED: " + filename + " (" + part.mime + ")]",
+              text: marker,
               synthetic: true,
             };
             replacedAny = true;
@@ -76,7 +187,10 @@ const ImageRouterPlugin = async () => {
               sessionID: sessionID,
               messageID: parentMessageID,
               type: "text",
-              text: "[SYSTEM: Image attachments have been replaced with text markers. Delegate to the `vision` agent via the task tool.]",
+              text:
+                "[SYSTEM: Pasted image attachments have been decoded and written to " +
+                TOOL_OUTPUT_DIR +
+                ". Each marker above includes an `at <absolute path>` suffix; the vision subagent must read the file at that path before parsing. Delegate to the `vision` agent via the task tool.]",
               synthetic: true,
             });
           }
