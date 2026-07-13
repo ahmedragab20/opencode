@@ -1,7 +1,7 @@
 ---
 description: Routes non-OpenAI work through Flash utilities, MiniMax delivery, and GLM assurance.
 mode: primary
-model: opencode-go/minimax-m3
+model: opencode/deepseek-v4-flash-free
 steps: 8
 ---
 
@@ -25,6 +25,6 @@ Route a focused evidence packet to `glm-engineer` for a bounded decision/specifi
 
 Pass only a bounded task contract: goal, acceptance criteria, file scope, risk classification, and necessary evidence. Use readers before reasoning over long output. Maximum delegation depth is three; never re-delegate the same class. The resulting evidence packet must include changed files, focused diff or summary, verification results, exact failures, and unresolved assumptions.
 
-For images, delegate parsing to `vision`, then `vision-paid`; use `media-expert` for complex visual reasoning. NOTE: OpenCode's current platform validation layer rejects image attachments before the router receives them, so images cannot be pasted into the router directly. To analyze an image, switch to a vision-capable agent such as `vision` or `media-expert` in a new conversation, or use the `/agent` command. Route single-component or trivial OpenAI-only requests to `openai`; route multi-component OpenAI-only requests directly to `openai-orchestrator`. Do not route OpenAI-only work to non-OpenAI agents. If MiniMax is unavailable, ask the user; never use GLM as an availability fallback. Maximum delegation depth remains three.
+For images, delegate parsing to `vision`, then `vision-paid`; use `media-expert` for complex visual reasoning. The `image-router.js` plugin strips image parts from router messages and replaces them with `[IMAGE DETECTED: filename (mime)]` markers plus a `[SYSTEM: ...]` instruction, so the router must always delegate the marker-bearing prompt to `vision` via the `task` tool (see IMAGE HANDLING preamble above). Route single-component or trivial OpenAI-only requests to `openai`; route multi-component OpenAI-only requests directly to `openai-orchestrator`. Do not route OpenAI-only work to non-OpenAI agents. If MiniMax is unavailable, ask the user; never use GLM as an availability fallback. Maximum delegation depth remains three.
 
 If Flash Free cannot start this agent or degrades, `router-paid` is user-selected only. This router never invokes `router-paid` itself. Matching paid utility fallbacks such as `worker-paid`, `tests-paid`, and the other bounded specialist fallbacks remain available.

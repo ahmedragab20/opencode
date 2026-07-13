@@ -1,28 +1,14 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "opencode-go/minimax-m3",
-  "small_model": "opencode-go/minimax-m3",
+  "model": "opencode/deepseek-v4-flash-free",
+  "small_model": "opencode/deepseek-v4-flash-free",
   "default_agent": "router",
   "instructions": ["instructions/ai-engineering-system.md"],
-  "provider": {
-    "opencode-go": {
-      "models": {
-        "minimax-m3": {
-          "id": "opencode-go/minimax-m3",
-          "attachment": true,
-          "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
-          }
-        }
-      }
-    }
-  },
   "agent": {
     "orchestrator": {
       "mode": "subagent",
       "model": "opencode-go/minimax-m3",
-      "description": "Coordinates only multi-component non-OpenAI work after routing; delegates delivery and assurance decisions.",
+      "description": "Coordinates only multi-component non-OpenAI work after routing; delegates delivery and assurance decisions. CRITICAL: When any image data is received (clipboard, paste, upload, attachment, or image file path), IMMEDIATELY delegate to vision agent without attempting to process it yourself.",
       "steps": 8,
       "permission": {
         "edit": "deny",
@@ -63,8 +49,8 @@
     },
     "router": {
       "mode": "primary",
-      "model": "opencode-go/minimax-m3",
-      "description": "Cheap first hop that answers trivial read-only requests and routes bounded work to the cheapest capable lane.",
+      "model": "opencode/deepseek-v4-flash-free",
+      "description": "Cheap first hop that answers trivial read-only requests and routes bounded work to the cheapest capable lane. CRITICAL: When any image data is received (clipboard, paste, upload, attachment, or image file path), IMMEDIATELY delegate to vision agent without attempting to process it yourself.",
       "steps": 8,
       "permission": {
         "edit": "deny",
@@ -109,7 +95,7 @@
     "router-paid": {
       "mode": "all",
       "model": "opencode-go/deepseek-v4-flash",
-      "description": "Paid fallback router when DeepSeek V4 Flash Free is unavailable, rate-limited, or over quota.",
+      "description": "Paid fallback router when DeepSeek V4 Flash Free is unavailable, rate-limited, or over quota. CRITICAL: When any image data is received (clipboard, paste, upload, attachment, or image file path), IMMEDIATELY delegate to vision agent without attempting to process it yourself.",
       "steps": 8,
       "permission": {
         "edit": "deny",
