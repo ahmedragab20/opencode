@@ -31,22 +31,34 @@ If a selected model is unavailable, rate-limited, over quota, degraded, missing 
 Fallback order by role:
 
 - GLM hard engineering: `opencode-go/glm-5.2` -> ask user if unavailable.
-- MiniMax coding: `opencode-go/minimax-m3` -> `opencode-go/glm-5.2` -> ask user.
+- MiniMax coding: `opencode-go/minimax-m3` -> ask user if unavailable. GLM is never an availability fallback.
 - DeepSeek Flash utilities: `opencode/deepseek-v4-flash-free` -> one retry with `opencode-go/deepseek-v4-flash` -> `opencode-go/minimax-m3` for bounded delivery or ask user. Never select GLM solely because Flash capacity is unavailable.
 - MiMo visual parsing: `opencode/mimo-v2.5-free` -> `opencode-go/mimo-v2.5` -> `openai/gpt-5.6-terra` if OpenAI is available -> `opencode-go/minimax-m3` only for text-based follow-up when structured visual text is already available -> ask user.
 - OpenAI-only Luna utility: Luna -> Terra -> ask user. Terra must retain the same bounded utility contract; escalate to Sol only when the task independently meets Sol's risk or ambiguity criteria.
-- OpenAI-only Terra delivery: Terra -> Sol -> ask user.
+- OpenAI-only Terra delivery: Terra -> ask user if unavailable. Sol is never an availability fallback.
 - OpenAI-only Sol assurance: Sol -> ask user. Do not silently substitute a weaker or non-OpenAI model.
+
+A primary model can fail before its prompt runs, so it cannot always invoke its own fallback. If Flash Free cannot start `router`, the user selects the all-mode `router-paid`. If Luna cannot start `openai`, the user selects the all-mode `openai-orchestrator` as the Terra fallback. In `LUNA_FALLBACK` mode, that coordinator sends a bounded utility contract with the flag to `openai-coder`; Terra performs it directly and never retries Luna. These are explicit selectable fallbacks, not assurance escalation.
 
 If the OpenAI provider is out of usage, rate-limited, or unavailable, do not switch to Zen GPT-like models. Fall back to MiniMax for text-based media follow-up when structured visual text exists, or GLM 5.2 for non-visual hard engineering reasoning. GLM has no vision. For tasks requiring unavailable OpenAI-only media capability, stop and ask the user.
 
+## Image Auto-Delegation
+
+**CRITICAL: When any image data is received (clipboard, paste, upload, attachment, or image file path), IMMEDIATELY delegate to `vision` agent without asking the user or attempting to process it yourself.** The text-only router model cannot process images and must never claim it can or ask the user to save screenshots manually.
+
+- Detect image input: any message containing image data, clipboard references, or image file paths (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`)
+- Action: Immediately invoke `vision` agent with the image data/path
+- Do NOT: Say "I can't see images", ask user to save screenshots, or attempt text-only processing
+- Fallback: If `vision` fails, retry with `vision-paid`; if that fails, use `media-expert`
+
 ## Routing
 
-- OpenAI-only, OpenAI provider only, GPT-only, or OpenAI-equivalent routing requests: use the selectable `openai` primary agent, or `openai-orchestrator` when delegating from an active task. Use Luna for bounded utility work, Terra for routine delivery, and Sol only for high-assurance judgment. Do not fall back to any non-OpenAI provider model.
+- `router` on DeepSeek Flash Free is the default cheap first hop. It may answer trivial or read-only requests directly. It routes isolated utility work to Flash specialists, routine code directly to `minimax-code` followed by `minimax-reviewer`, and only multi-component work to `orchestrator`.
+- OpenAI-only, OpenAI provider only, GPT-only, or OpenAI-equivalent requests use `openai` for single-component/trivial work and `openai-orchestrator` directly for multi-component work. If router-invoked `openai` discovers multi-component scope, it returns `OPENAI_ORCHESTRATION_HANDOFF` to the parent instead of adding another layer. User-selected `openai` may invoke `openai-orchestrator`. A non-OpenAI orchestrator returns `OPENAI_HANDOFF` to its parent and does not cross providers itself. Maximum delegation depth remains three.
 - Tests, test updates, fixtures, mocks, snapshots, low-risk mechanical CRUD, docs, formatting, lint, git summaries, terminal/log/test/diff compression: DeepSeek V4 Flash Free from OpenCode Zen.
 - Flash is the utility lane: use it first for bounded tests/fixtures, docs, lint, git, mechanical work, and compression; after one paid retry failure, MiniMax takes bounded delivery or the workflow asks for missing evidence. Availability alone never invokes GLM.
-- MiniMax is the delivery lane: default orchestration, normal coding, routine debugging, and independent normal-risk review via `minimax-reviewer`.
-- GLM is the assurance lane only: security/auth/secrets/payments/destructive operations, public APIs/schemas, persistence, concurrency, migrations, compliance, architecture, production incidents, material ambiguity, confidence below 80, or after two focused MiniMax fix cycles.
+- MiniMax is the delivery lane: normal coding, routine debugging, multi-component orchestration, and independent normal-risk review via `minimax-reviewer`.
+- GLM is a decision and assurance lane, never an implementation or availability-fallback lane. It returns a bounded specification, invariants, risks, and required tests; MiniMax implements the result and GLM `reviewer` reviews only the gated result.
 - Very complicated final OpenAI consultation only after GLM 5.2 is insufficient: `openai/gpt-5.6-sol`.
 - Screenshots, OCR, IDE/browser/UI/terminal screenshots, diagrams, and code screenshots: MiMo V2.5 Free from OpenCode Zen as structured parser only.
 - If MiMo V2.5 Free is unavailable, rate-limited, over quota, degraded, or repeatedly fails, retry visual parsing with `opencode-go/mimo-v2.5` before escalating to `openai/gpt-5.6-terra`.
@@ -54,9 +66,9 @@ If the OpenAI provider is out of usage, rate-limited, or unavailable, do not swi
 
 ## Nested Specialist Delegation
 
-Delegation rules apply inside subagents too. Being selected for a task does not make an agent the owner of every follow-up task it discovers.
+Only task-enabled routers, orchestrators, and coders may delegate, and only through their configured task allowlists. Task-denied utilities, readers, vision/media agents, decision agents, and reviewers never invoke another agent: they return an exact handoff/status and evidence to their parent. The parent owns paid fallback, escalation, implementation assignment, and independent review.
 
-When a subagent needs work outside its assigned specialty, delegate that work to the correct specialist instead of doing it directly:
+When a task-enabled parent needs work outside its specialty, it delegates to the correct configured specialist:
 
 - Test execution, test authoring, fixture updates, snapshot updates, and test-failure triage: delegate to `tests` first, then `tests-paid` if the free agent is unavailable or repeatedly fails.
 - Formatting, import cleanup, lint-only fixes, and style-only repairs: delegate to `lint` first, then `lint-paid`.
@@ -67,9 +79,28 @@ When a subagent needs work outside its assigned specialty, delegate that work to
 
 A coding or hard-engineering agent may run a narrow command itself only when it is immediate, low-volume evidence for its own assigned source change, such as a targeted unit test or formatter check. If the command output is long, the failure cause is unclear, repeated attempts are needed, git communication is requested, or the work becomes mostly tests/lint/docs/git/log compression, delegate to the relevant specialist before continuing.
 
-For the general workflow, each delegation includes a task contract (goal, acceptance criteria, file scope, risk classification, and needed evidence) and has maximum depth three. Do not re-delegate the same task class. Before MiniMax or GLM reasons over a large log/diff, Flash readers produce a focused evidence packet: changed files, focused diff or summary, verification results, exact failures, test changes, and unresolved assumptions. MiniMax may make at most two report -> focused fix -> re-review cycles; then GLM receives that packet. Normal-risk executable changes use independent `minimax-reviewer`; GLM `reviewer` is mandatory only when the assurance gate is met. Docs-only, formatting-only, and clear fixture/snapshot-only changes do not need GLM review unless they independently meet that gate.
+For the general workflow, each delegation includes a task contract (goal, acceptance criteria, file scope, risk classification, and needed evidence) and has maximum depth three. Do not re-delegate the same task class. Before MiniMax or GLM reasons over a large log/diff, Flash readers produce a focused evidence packet: changed files, focused diff or summary, verification results, exact failures, test changes, and unresolved assumptions. MiniMax may make at most two report -> focused fix -> re-review cycles; then the assurance gate is met. Normal-risk executable changes use independent `minimax-reviewer`; GLM `reviewer` is mandatory only when the assurance gate is met. Docs-only, formatting-only, and clear fixture/snapshot-only changes do not need GLM review unless they independently meet that gate.
 
-OpenAI-only workflows must stay within the three lanes: Luna handles bounded tests/docs/git/lint/mechanical work and compression; Terra owns routing, routine implementation, and normal review; Sol handles architecture, security, migrations, ambiguous behavior, complex debugging, and risk-gated final review. A child receives only a goal, acceptance criteria, file scope, and needed evidence. Use Luna compression before Terra/Sol reasoning; do not pass broad logs or full history. Escalation is monotonic (Luna -> Terra -> Sol), maximum delegation depth is three, Luna gets one retry and Terra gets two focused fix cycles; escalate to Sol only when an explicit assurance gate is met or focused evidence leaves material uncertainty. Do not route OpenAI-only work to DeepSeek, GLM, MiniMax, MiMo, Zen bundle models, or OpenCode Go models.
+OpenAI-only workflows stay within three lanes: Luna is the bounded first hop and utility lane; Terra implements routine work and performs routine review; Sol makes only assurance-gated decisions and reviews. A child receives only a goal, acceptance criteria, file scope, and needed evidence. Use Luna compression before Terra/Sol reasoning; do not pass broad logs or full history. After one focused Terra report -> fix -> re-review cycle fails, the assurance gate is met. Sol returns a bounded specification, invariants, risks, and required tests; Terra implements that specification; an independent Sol reviewer reviews only the gated result. Do not route OpenAI-only work to DeepSeek, GLM, MiniMax, MiMo, Zen bundle models, or OpenCode Go models.
+
+## Assurance Gate
+
+Use GLM or Sol only when at least one explicit gate applies:
+
+- architecture or cross-system design
+- security, privacy, authentication, authorization, secrets, payments, permissions, or destructive operations
+- migrations, persistence, data integrity, or irreversible data changes
+- public API or schema compatibility
+- concurrency or distributed state
+- compliance or a production incident
+- material ambiguity with materially different implementations
+- confidence remains below 80 after focused evidence collection
+- one focused Terra fix cycle or two focused MiniMax fix cycles has failed
+- independent review of high-risk code authored by an assurance model
+
+Ordinary behavior-changing or externally visible work is not, by itself, an assurance trigger. Assurance models do not edit, run commands, or delegate. They return decisions/specifications or review findings to the parent. The cheaper delivery model owns implementation and verification.
+
+If GLM cannot resolve a genuinely gated decision from focused evidence, it returns `EXPERT_CONSULT` and the compressed packet to the parent. Only the parent may invoke `gpt-expert`; it rejects any request without both the explicit assurance gate and unresolved GLM decision, returns bounded guidance, and never edits or delegates.
 
 ## Compression Before Reasoning
 
@@ -98,11 +129,11 @@ Source-of-truth priority:
 - 60-80: reclassify with a focused evidence packet; escalate to GLM 5.2 only if the assurance gate is met, otherwise use bounded MiniMax delivery or ask.
 - Below 60: stop and request assistance or stronger review.
 
-If `opencode/deepseek-v4-flash-free` fails because of quota, rate limits, provider errors, or availability, retry once with `opencode-go/deepseek-v4-flash` for the same task class. If that retry fails, use MiniMax for bounded delivery or ask for the missing evidence/capability; do not invoke GLM solely for availability. Escalate MiniMax to GLM only through the assurance gate or after two focused fix cycles. If GLM remains below 80 confidence on a very complicated task, ask for missing information or escalate to `openai/gpt-5.6-sol`.
+If `opencode/deepseek-v4-flash-free` fails because of quota, rate limits, provider errors, or availability, retry once with `opencode-go/deepseek-v4-flash` for the same task class. If that retry fails, use MiniMax for bounded delivery or ask for the missing evidence/capability; do not invoke GLM solely for availability. If MiniMax is unavailable, ask the user. Escalate MiniMax to GLM only through the assurance gate. If GLM remains below 80 confidence on a very complicated task, ask for missing information or escalate to `openai/gpt-5.6-sol` only when that consultation independently meets the gate.
 
-All normal-risk executable edits in the general workflow require independent MiniMax review through `minimax-reviewer`. GLM 5.2 `reviewer` is required only for assurance-gated changes: security/auth/secrets/payments/destructive operations, public APIs/schemas, persistence, concurrency, migrations, compliance, architecture, production incidents, material ambiguity, confidence below 80, or two failed MiniMax fix cycles. Every executable GLM implementation requires a fresh independent `reviewer` invocation; a reviewer may never approve its own implementation and must obtain a separate reviewer or human approval. Review reports must be actionable and use the focused evidence packet. OpenAI-only review requirements are defined below and stay entirely within the OpenAI provider.
+All normal-risk executable edits in the general workflow require independent MiniMax review through `minimax-reviewer`. GLM 5.2 `reviewer` is required only when the explicit assurance gate is met. GLM supplies a bounded specification to MiniMax and never implements directly. Review reports must be actionable and use the focused evidence packet. OpenAI-only review requirements are defined below and stay entirely within the OpenAI provider.
 
-For OpenAI-only workflows, use `openai` as the selectable primary, `openai-orchestrator` for Terra delivery routing, `openai-coder` for Terra implementation, matching `openai-luna-*` agents for bounded utility work, and `openai-sol-*` agents only for assurance. Luna output that edits executable code needs independent Terra review; Terra changes need a fresh Terra review for normal risk or Sol review for any behavior-changing or externally visible change, and every security, data, API/schema, persistence, concurrency, or migration change. Sol changes need a separate Sol review or human approval. The same report -> fix -> review loop applies, but every model must be from the OpenAI provider.
+For OpenAI-only workflows, use the Luna-based `openai` selectable primary, `openai-orchestrator` for direct multi-component routing or user-selected `LUNA_FALLBACK`, `openai-coder` for Terra implementation or flagged bounded utility fallback, matching `openai-luna-*` agents for ordinary bounded utility work, and `openai-sol-*` agents only when the explicit assurance gate applies. Luna output that edits executable code needs independent Terra review. Terra changes receive Terra review for normal risk and Sol review only when gated. Sol supplies a bounded specification to Terra and never implements directly. The same report -> fix -> review loop applies, and every model stays within the OpenAI provider. If Terra is unavailable, ask the user; never substitute Sol for availability.
 
 ## Stop And Ask Rule
 

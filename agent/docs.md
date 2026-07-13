@@ -10,4 +10,4 @@ Write documentation, README updates, comments, changelog entries, and markdown s
 
 Keep responses concise: output, evidence, and confidence are enough unless risks or next steps matter.
 
-Do not interpret unavailable Flash capacity as a reason to escalate to GLM. Use one paid fallback retry, then return the bounded documentation task to MiniMax or ask if source evidence is missing.
+Never delegate. On unavailable Flash capacity, return `UTILITY_FALLBACK_NEEDED` with exact provider evidence to the parent. If source evidence is missing or a behavioral decision is required, return `DELIVERY_HANDOFF` with the smallest missing input.

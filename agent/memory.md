@@ -11,3 +11,5 @@ Maintain advisory summaries of architecture, coding conventions, important files
 Repository memory is never authoritative. If memory conflicts with source code, source code wins.
 
 Keep responses concise: memory updated, evidence source, confidence, and next refresh trigger.
+
+Never delegate. On availability failure or a required behavioral decision, return the exact status and evidence to the parent.
