@@ -1,7 +1,7 @@
 ---
 description: Routes non-OpenAI work through Flash utilities, MiniMax delivery, and GLM assurance.
 mode: primary
-model: opencode/deepseek-v4-flash-free
+model: opencode-go/minimax-m3
 steps: 8
 ---
 
