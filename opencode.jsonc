@@ -4,6 +4,20 @@
   "small_model": "opencode-go/minimax-m3",
   "default_agent": "router",
   "instructions": ["instructions/ai-engineering-system.md"],
+  "provider": {
+    "opencode-go": {
+      "models": {
+        "minimax-m3": {
+          "id": "opencode-go/minimax-m3",
+          "attachment": true,
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        }
+      }
+    }
+  },
   "agent": {
     "orchestrator": {
       "mode": "subagent",
