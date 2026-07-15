@@ -6,7 +6,7 @@ Personal configuration for [opencode](https://opencode.ai), built around a **cos
 
 The system is designed around three core principles:
 
-1. **Free-first, paid-fallback lane** — Every capability has a free tier (DeepSeek V4 Flash Free, MiMo V2.5 Free, GPT 5.6 Luna) with an automatic paid retry (`*-paid`) before escalating. This keeps day-to-day costs near zero.
+1. **Free-first, paid-fallback lane** — Free tiers (DeepSeek V4 Flash Free, MiMo V2.5 Free) are used by default, with an automatic paid retry (`*-paid`) before escalating. The OpenAI lane has its own cheapest tier (Luna, still paid). This keeps day-to-day costs near zero.
 2. **Compress before reasoning** — Large logs, diffs, terminal output, and test output are always compressed by cheap Flash readers before reaching expensive reasoning models. This reduces token burn by 10–100× per session.
 3. **Three-tier model hierarchy** — Every provider lane is split into Utility (cheapest, mechanical work), Delivery (normal coding/review), and Assurance (expensive, gated decisions only). Ordinary work never touches the expensive tier.
 
@@ -108,13 +108,13 @@ Utility (cheapest)     →     Delivery (mid-cost)     →     Assurance (expens
   Luna 5.6                           Terra 5.6                          Sol 5.6
 ```
 
-- **Utility** handles mechanical, well-specified, low-risk work (boilerplate, tests, docs, lint, compression). Uses the free tier by default.
+- **Utility** handles mechanical, well-specified, low-risk work (boilerplate, tests, docs, lint, compression). Uses the free tier by default in the non-OpenAI lane; the OpenAI lane uses its cheapest paid model (Luna).
 - **Delivery** handles normal-risk features, refactors, debugging, and routine review. Uses a paid mid-cost model only when needed.
 - **Assurance** is *only* invoked when an explicit gate is met (see below). Uses the most expensive model, but rarely.
 
 ### Fallback Chains
 
-Each free agent has a defined fallback path that prevents silent degradation while avoiding unnecessary escalation to the most expensive models:
+Each primary agent has a defined fallback path that prevents silent degradation while avoiding unnecessary escalation to the most expensive models:
 
 | Primary | Paid Retry | If Both Fail |
 |---------|-----------|-------------|
@@ -132,7 +132,7 @@ Before any expensive reasoning model processes data, cheap utility agents compre
 - **Terminal output** → `terminal-reader`: preserves exit code, first failure, exact errors, file paths, line numbers
 - **Logs** → `log-reader`: preserves timestamps, exception frequencies, failing subsystem
 - **Git diffs** → `diff-reader`: preserves changed APIs, risky files, behavioural changes
-- **Screenshots** → `vision`/`vision-paid`: structured markdown summary replaces raw pixel data
+- **Screenshots** → `vision` → `vision-paid` → `media-expert`: structured markdown summary replaces raw pixel data
 
 A 10,000-line test output becomes a 20-line evidence packet. A 500 KB screenshot becomes a structured markdown block. This reduces the token payload for MiniMax/GLM/Sol by 10–100× per session.
 
