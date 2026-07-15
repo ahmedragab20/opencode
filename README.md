@@ -71,17 +71,13 @@ Every code change gets independent review — not just for correctness, but as t
 coder → reviewer → coder applies fixes → re-review → approved or escalated
 ```
 
-**Why it saves money:** Errors caught in review cost ~1,000 tokens to fix vs. 10–100× for full re-implementation or production debugging. 90%+ of issues resolve in the delivery lane without touching expensive assurance models. Reviewers cannot edit — only report findings with file/line references — which prevents silent "fix-ups" and forces clear communication.
-
-**Why it's more reliable:** Two independent passes on the same focused evidence (goal, acceptance criteria, diff, verification results). Creator sees intent, critic sees execution. Every change must return verification evidence; missing evidence returns `EVIDENCE_NEEDED` instead of approval.
-
 After 2 failed MiniMax cycles or 1 failed Terra cycle, the task escalates to assurance. Docs-only, formatting-only, and clear fixture/snapshot-only changes skip review unless they independently meet the assurance gate. Delegation is capped at 3 levels.
 
 ## Fallback Chains
 
 | Primary | Paid Retry | If Both Fail |
 |---------|-----------|-------------|
-| DeepSeek Flash Free | DeepSeek Flash (paid) | MiniMax M3 or ask — never GLM |
+| DeepSeek Flash Free | DeepSeek Flash (paid) | MiniMax M3 or ask |
 | MiMo V2.5 Free | MiMo V2.5 (paid) | GPT-5.6 Terra → MiniMax text → ask |
 | Luna (GPT-5.6) | Terra (GPT-5.6) | Ask — never non-OpenAI |
 | Terra / MiniMax M3 / GLM 5.2 | Ask user | No cross-tier availability fallback |
