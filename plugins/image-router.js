@@ -1,7 +1,7 @@
 /**
- * image-router.js — Intercepts image attachments in messages to text-only
- * router agents and replaces them with text markers so the model can
- * delegate to the vision agent instead of trying to process images itself.
+ * image-router.js — Intercepts image attachments in messages to the
+ * text-only smart-lead agent (glm) and replaces them with text markers so
+ * the model can delegate to the vision agent instead of processing images.
  *
  * OpenCode TUI embeds pasted clipboard images as `data:<mime>;base64,…`
  * URLs and never writes them to disk. The vision subagent relies on a
@@ -25,7 +25,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const ROUTER_AGENT_IDS = new Set(["router", "router-paid"]);
+const TEXT_ONLY_LEAD_IDS = new Set(["glm"]);
 const PRT_PREFIX = "prt_";
 const TOOL_OUTPUT_DIR = path.join(
   os.homedir(),
@@ -137,7 +137,7 @@ function summarizeReplace(part) {
 }
 
 /**
- * Plugin: strip image attachments from messages destined for text-only routers.
+ * Plugin: strip image attachments from messages destined for the text-only smart-lead agent.
  */
 const ImageRouterPlugin = async () => {
   try {
@@ -145,7 +145,7 @@ const ImageRouterPlugin = async () => {
       "chat.message": async (_input, _output) => {
         try {
           const agent = _input && _input.agent;
-          if (!agent || !ROUTER_AGENT_IDS.has(agent)) return;
+          if (!agent || !TEXT_ONLY_LEAD_IDS.has(agent)) return;
 
           const parts = _output && _output.parts;
           if (!parts || !Array.isArray(parts) || parts.length === 0) return;
