@@ -6,29 +6,36 @@ Personal configuration for [opencode](https://opencode.ai), built around a **cos
 
 1. **Free-first, paid-fallback** — Free tiers (DeepSeek V4 Flash Free, MiMo V2.5 Free) are default, with one paid retry (`*-paid`) before escalating. The OpenAI lane uses its cheapest tier (Luna, still paid). Day-to-day costs stay near zero.
 2. **Compress before reasoning** — Large output (logs, diffs, terminal, screenshots) is compressed by cheap Flash readers before reaching expensive reasoning models. Token burn reduced by 10–100×.
-3. **Three-tier hierarchy** — Every lane splits into Utility (cheapest, mechanical), Delivery (normal coding/review), and Assurance (expensive, gated only). Ordinary work never touches the top tier.
+3. **Three-tier hierarchy** — Every lane splits into Utility (cheapest, mechanical), Delivery (normal coding/review), and Assurance (expensive, planning + gated review). GLM plans every feature; the gate only determines review level.
 
 > **Accuracy overrides cost.** Never chooses a cheaper model if it increases the chance of incorrect implementation, unsafe command, or data loss.
 
 ## Request Flow
 
 ```
-Request → router (Flash Free)
-  ├─ Trivial → answer directly
-  ├─ Utility → tests/lint/docs/git/worker (Flash Free) → *-paid (Flash) → minimax-code
-  ├─ Routine coding → minimax-code (MiniMax M3) → minimax-reviewer (MiniMax M3)
-  ├─ Multi-component → orchestrator (MiniMax M3)
-  ├─ Assurance gate → glm-engineer (GLM 5.2) → spec → minimax-code → reviewer (GLM 5.2)
-  ├─ Image detected → vision (MiMo Free) → vision-paid → media-expert
-  └─ OpenAI-only → openai (Luna) → openai-coder (Terra) → openai-reviewer (Terra)
-                     └─ Assurance gate → openai-sol-engineer (Sol) → spec → openai-coder → openai-sol-reviewer
+Request → router (Flash Free) — CLASSIFIER + RELAY ONLY (never plans or sequences)
+  Smart agents own the plan, the sequence, and the context; the router only classifies the
+  first hop and relays each agent's HANDOFF directive. Tests/diffs/logs run through cheap
+  Flash (or Luna) specialists and pass results back to the smart model that requested them.
+
+  ├─ Trivial/read-only → answered directly by the router
+  ├─ Image detected → vision (MiMo Free) → router re-classifies the underlying task → smart agent (with vision description)
+  ├─ Utility-only → tests/lint/docs/git/worker/reader (Flash Free) → *-paid (Flash) → DONE
+  ├─ Feature/refactor/bug fix → glm-engineer (GLM 5.2) LEADS: gathers evidence via cheap readers, plans
+  │     → HANDOFF → minimax-code (MiniMax M3) implements, delegates tests/diffs/logs to Flash
+  │     → HANDOFF → minimax-reviewer → DONE (or HANDOFF back to minimax-code for the fix loop)
+  ├─ Multi-component → orchestrator (MiniMax M3) LEADS: decomposes, delegates components, synthesizes → DONE
+  ├─ Assurance gate → glm-engineer plan → minimax-code → glm-reviewer (GLM 5.2) → DONE (or fix loop)
+  └─ OpenAI-only → openai (Luna) classifies + relays → openai-coder (Terra) LEADS
+        → HANDOFF → openai-reviewer (Terra) → DONE
+        └─ Assurance gate → openai-sol-engineer (Sol) spec → HANDOFF → openai-coder → openai-sol-reviewer → DONE
 ```
 
 ## All Agents
 
 | Agent | Model | Tier / Lane | Role |
 |-------|-------|-------------|------|
-| `router` ★ | `opencode/deepseek-v4-flash-free` | Free / Routing | Default first hop: answers trivial, routes all else |
+| `router` ★ | `opencode/deepseek-v4-flash-free` | Free / Routing | Classifier + relay: answers trivial, classifies the first hop, relays smart-agent handoffs |
 | `router-paid` | `opencode-go/deepseek-v4-flash` | Paid / Routing | Fallback when Flash Free is unavailable |
 | `worker` / `*-paid` | Flash Free / Flash | Free / Utility | Low-risk mechanical, boilerplate, CRUD, mocks |
 | `tests` / `*-paid` | Flash Free / Flash | Free / Utility | Tests, snapshots, fixtures |
@@ -42,12 +49,12 @@ Request → router (Flash Free)
 | `vision` / `vision-paid` | MiMo Free / MiMo | Free↝Paid / Visual | Screenshots, OCR, diagrams → structured markdown |
 | `media-expert` | `openai/gpt-5.6-terra` | Paid / Visual | Complex UI reasoning, Figma, multimodal |
 | `orchestrator` | `opencode-go/minimax-m3` | Paid / Delivery | Multi-component non-OpenAI coordinator |
-| `minimax-code` | `opencode-go/minimax-m3` | Paid / Delivery | Features, refactors, bug fixes, integration |
+| `minimax-code` | `opencode-go/minimax-m3` | Paid / Delivery | Implements GLM plan. Features, refactors, bug fixes, integration |
 | `minimax-reviewer` | `opencode-go/minimax-m3` | Paid / Delivery | Normal-risk independent reviewer (read-only) |
-| `glm-engineer` | `opencode-go/glm-5.2` | Paid / Assurance | **Gate only.** Returns spec, invariants, tests (read-only) |
-| `reviewer` | `opencode-go/glm-5.2` | Paid / Assurance | **Gate only.** High-assurance reviewer (read-only) |
+| `glm-engineer` | `opencode-go/glm-5.2` | Paid / Assurance | Plans every feature; gathers evidence via cheap readers; returns spec, steps, invariants, tests (read-only) |
+| `glm-reviewer` | `opencode-go/glm-5.2` | Paid / Assurance | **Gate only.** High-assurance reviewer (read-only) |
 | `gpt-expert` | `openai/gpt-5.6-sol` | Paid / Assurance | Rare consult when GLM insufficient (read-only) |
-| `openai` | `openai/gpt-5.6-luna` | Paid / OpenAI | OpenAI first hop: Luna → Terra → Sol |
+| `openai` | `openai/gpt-5.6-luna` | Paid / OpenAI | OpenAI first-hop classifier-relay (Luna) → Terra delivery / Sol gated assurance |
 | `openai-orchestrator` | `openai/gpt-5.6-terra` | Paid / OpenAI | Terra fallback + multi-component coordinator |
 | `openai-coder` | `openai/gpt-5.6-terra` | Paid / OpenAI | Features, refactors, bug fixes |
 | `openai-reviewer` | `openai/gpt-5.6-terra` | Paid / OpenAI | Normal-risk reviewer (read-only) |
@@ -58,17 +65,20 @@ Request → router (Flash Free)
 | `openai-luna-lint` | `openai/gpt-5.6-luna` | Paid / OpenAI | Formatting and lint |
 | `openai-luna-reader` | `openai/gpt-5.6-luna` | Paid / OpenAI | Output/diff compression |
 | `openai-media-expert` | `openai/gpt-5.6-terra` | Paid / OpenAI | Media, screenshots, OCR, UI |
-| `openai-sol-engineer` | `openai/gpt-5.6-sol` | Paid / OpenAI | **Gate only.** Architecture, security, migrations (read-only) |
+| `openai-sol-engineer` | `openai/gpt-5.6-sol` | Paid / OpenAI | **Gate only.** Architecture, security, migrations; delegates compression to `openai-luna-reader` (read-only) |
 | `openai-sol-reviewer` | `openai/gpt-5.6-sol` | Paid / OpenAI | **Gate only.** High-assurance reviewer (read-only) |
 
 ★ = default/primary agent. `*-paid` = one paid retry for any free utility before escalating.
 
 ## Review Cycle
 
-Every code change gets independent review — not just for correctness, but as the core cost-control mechanism:
+GLM plans every feature, MiniMax implements, and every code change gets independent review — not just for correctness, but as the core cost-control mechanism:
 
 ```
-coder → reviewer → coder applies fixes → re-review → approved or escalated
+coder → normal-risk reviewer → coder applies fixes → re-review → approved
+        └─ gate met or failed cycles → assurance reviewer → coder fixes → approved
+  MiniMax lane: minimax-reviewer → glm-reviewer
+  OpenAI lane:  openai-reviewer → openai-sol-reviewer
 ```
 
 After 2 failed MiniMax cycles or 1 failed Terra cycle, the task escalates to assurance. Docs-only, formatting-only, and clear fixture/snapshot-only changes skip review unless they independently meet the assurance gate. Delegation is capped at 3 levels.
@@ -84,20 +94,23 @@ After 2 failed MiniMax cycles or 1 failed Terra cycle, the task escalates to ass
 
 ## Assurance Gate
 
-Expensive assurance (GLM 5.2 / GPT-5.6 Sol) is invoked **only** when:
+GLM 5.2 plans every feature, refactor, and bug fix. The assurance gate determines the **review level**, not whether GLM is invoked:
 
-- Architecture, cross-system design
-- Security, auth, secrets, payments, permissions, destructive ops
-- Migrations, persistence, data integrity, irreversible changes
-- Public API or schema compatibility
-- Concurrency, distributed state
-- Compliance, production incidents
-- Material ambiguity with materially different implementations
-- Confidence below 80% after focused evidence
-- Two failed MiniMax cycles or one failed Terra cycle
-- Review of high-risk code authored by an assurance model
+- `minimax-reviewer` (MiniMax M3) handles all normal-risk review
+- `glm-reviewer` (GLM 5.2) or `openai-sol-reviewer` (Sol) handles **gated** review when:
 
-Ordinary behaviour-changing or externally visible work is **not** an assurance trigger — it stays in the delivery lane.
+  - Architecture, cross-system design
+  - Security, auth, secrets, payments, permissions, destructive ops
+  - Migrations, persistence, data integrity, irreversible changes
+  - Public API or schema compatibility
+  - Concurrency, distributed state
+  - Compliance, production incidents
+  - Material ambiguity with materially different implementations
+  - Confidence below 80% after focused evidence
+  - Two failed MiniMax cycles or one failed Terra cycle
+  - Review of high-risk code authored by an assurance model
+
+Ordinary behaviour-changing or externally visible work still gets planned by GLM but reviewed in the delivery lane.
 
 ## Model Inventory
 
@@ -123,21 +136,23 @@ Ordinary behaviour-changing or externally visible work is **not** an assurance t
 ## Structure
 
 ```
-opencode.jsonc    — 42 agents, 502 lines
+opencode.jsonc    — 42 agents, 526 lines
 agent/            — 42 agent definitions
-instructions/     — ai-engineering-system.md (162 lines)
+instructions/     — ai-engineering-system.md (201 lines)
 plugins/          — image-router.js, herdr-agent-state.js
 ```
 
 ## Quick Reference
 
-| Request Type | Route |
+The router classifies the first hop and relays `HANDOFF → <agent>` directives; smart agents lead each step. All tests/diffs/logs go through cheap specialists and pass back to the leading smart model.
+
+| Request Type | First hop (router) → smart lead → handoff chain |
 |-------------|-------|
-| Trivial/read-only | Answer directly |
-| Tests, fixtures, lint, docs, git, boilerplate | `{specialist}` → `{specialist}-paid` → `minimax-code` |
-| Features, refactors, bug fixes | `minimax-code` → `minimax-reviewer` |
-| Multi-component (non-OpenAI) | `orchestrator` → specialists |
-| Architecture, security, data integrity | `glm-engineer` → spec → `minimax-code` → `reviewer` |
-| Images, screenshots | `vision` → `vision-paid` → `media-expert` |
-| OpenAI-only tasks | `openai` → `openai-coder` → `openai-reviewer` |
-| OpenAI assurance | `openai-sol-engineer` → spec → `openai-coder` → `openai-sol-reviewer` |
+| Trivial/read-only | Router answers directly |
+| Tests, fixtures, lint, docs, git, boilerplate | Flash `{specialist}` → `*-paid` → `minimax-code` (if escalation) |
+| Features, refactors, bug fixes | `glm-engineer` leads (plans + gathers evidence) → `minimax-code` → `minimax-reviewer` |
+| Multi-component (non-OpenAI) | `orchestrator` leads → delegates components → synthesizes |
+| Gated (security, migrations, etc.) | `glm-engineer` leads → `minimax-code` → `glm-reviewer` (GLM) |
+| Images, screenshots | `vision` → router re-classifies → smart lead (with vision description) |
+| OpenAI-only tasks | `openai` (Luna) classifies + relays → `openai-coder` (Terra) leads → `openai-reviewer` |
+| OpenAI assurance | `openai-sol-engineer` (Sol) leads → `openai-coder` → `openai-sol-reviewer` |
