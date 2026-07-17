@@ -62,6 +62,10 @@ Stop and ask the user when: requirements are ambiguous with materially different
 
 After implementing, verify *by reading the worker's output and reasoning about correctness*. Re-running the project's lint suite / test suite / full type-check is a chore — delegate it (`tests`, `lint`, or `terminal-reader` for long output). Smart running tests/lint/typecheck directly via `bash` is what the Chore Rule forbids. Reading git state for context (`git status`, small `git diff`, `git log`) and running an isolated `tsc --noEmit` on the file under inspection are not chores and stay with Smart. Never assume a test framework — check the README or codebase for the command.
 
+## Worker Step-Budget Handoff
+
+Flash workers have a bounded step budget. If a worker reaches its budget before finishing the assigned chore, it MUST reserve its final step to report back a **continuation handoff** — completed actions, exact current state, remaining work, pickup context, and blockers — it never silently stops halfway. When a worker returns such a handoff (or a partial result that is clearly not final, e.g. `MAX_STEPS_REACHED_INCOMPLETE`), spawn a FRESH worker of the same role via `task` — or its `*-paid` twin if the free tier is the bottleneck — passing the previous worker's handoff verbatim plus the precise remaining work, so the new worker continues from the exact stopping point. Do not redo already-completed steps; treat the handoff as authoritative for state.
+
 ## Chore Rule — STRICT
 
 Smart MUST never do chores itself. By default, every chore in the table above — tests, lint, docs, git commit messages / release notes / PR summaries, memory updates, output/log/diff compression, mechanical boilerplate / CRUD / simple refactors — and every direct execution of those chores via `bash` or `edit` (running `git commit` with the message inline, running `npm test`, fixing lint warnings, generating fixtures, writing README prose) goes to a Flash worker.

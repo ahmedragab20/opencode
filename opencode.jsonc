@@ -46,70 +46,70 @@
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
       "description": "Low-risk mechanical implementation, boilerplate, CRUD, fixtures, mocks, and simple refactors. Follows the smart lead's instructions and hands back the result.",
-      "steps": 6,
+      "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "tests": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
       "description": "Writes and updates tests, integration tests, snapshots, fixtures, and mocks. Follows the smart lead's instructions and hands back the result.",
-      "steps": 6,
+      "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "lint": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
       "description": "Handles formatting, lint, imports, and style without intentional runtime behavior changes. Follows the smart lead's instructions and hands back the result.",
-      "steps": 6,
+      "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "docs": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
       "description": "Writes README content, markdown docs, comments, and documentation updates. Follows the smart lead's instructions and hands back the result.",
-      "steps": 6,
+      "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "git": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
       "description": "Writes commit messages, release notes, PR summaries, and git change summaries. Follows the smart lead's instructions and hands back the result.",
-      "steps": 4,
+      "steps": 12,
       "permission": { "edit": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "memory": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
       "description": "Maintains rolling repository memory and refreshes project summaries after significant changes. Follows the smart lead's instructions and hands back the result.",
-      "steps": 6,
+      "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "terminal-reader": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
       "description": "Compresses large terminal output into errors, warnings, first failure, likely root cause, and relevant files. Hands the compressed packet back to the smart lead.",
-      "steps": 4,
+      "steps": 8,
       "permission": { "edit": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "log-reader": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
       "description": "Compresses logs into repeated exceptions, timestamps, frequencies, and likely failing subsystem. Hands the compressed packet back to the smart lead.",
-      "steps": 4,
+      "steps": 8,
       "permission": { "edit": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "diff-reader": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
       "description": "Compresses large git diffs into changed APIs, risky files, behavior changes, and migration notes. Hands the compressed packet back to the smart lead.",
-      "steps": 4,
+      "steps": 8,
       "permission": { "edit": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "vision": {
       "mode": "subagent",
       "model": "opencode/mimo-v2.5-free",
       "description": "Provides vision for the text-only smart lead by describing images as structured markdown. Does not implement, debug, or take actions.",
-      "steps": 6,
+      "steps": 12,
       "permission": {
         "bash": "allow",
         "external_directory": "allow",
@@ -123,7 +123,7 @@
       "mode": "subagent",
       "model": "opencode-go/mimo-v2.5",
       "description": "Paid fallback visual parser when MiMo V2.5 Free is unavailable, rate-limited, or over quota. Describes images as structured markdown for the smart lead.",
-      "steps": 6,
+      "steps": 12,
       "permission": {
         "bash": "allow",
         "external_directory": "allow",
@@ -137,63 +137,63 @@
       "mode": "subagent",
       "model": "opencode-go/deepseek-v4-flash",
       "description": "Paid fallback for low-risk mechanical implementation when DeepSeek V4 Flash Free is unavailable, rate-limited, or over quota.",
-      "steps": 6,
+      "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "tests-paid": {
       "mode": "subagent",
       "model": "opencode-go/deepseek-v4-flash",
       "description": "Paid fallback tests specialist when DeepSeek V4 Flash Free is unavailable, rate-limited, or over quota.",
-      "steps": 6,
+      "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "lint-paid": {
       "mode": "subagent",
       "model": "opencode-go/deepseek-v4-flash",
       "description": "Paid fallback lint and formatting specialist when DeepSeek V4 Flash Free is unavailable, rate-limited, or over quota.",
-      "steps": 6,
+      "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "docs-paid": {
       "mode": "subagent",
       "model": "opencode-go/deepseek-v4-flash",
       "description": "Paid fallback documentation specialist when DeepSeek V4 Flash Free is unavailable, rate-limited, or over quota.",
-      "steps": 6,
+      "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "git-paid": {
       "mode": "subagent",
       "model": "opencode-go/deepseek-v4-flash",
       "description": "Paid fallback git communication specialist when DeepSeek V4 Flash Free is unavailable, rate-limited, or over quota.",
-      "steps": 4,
+      "steps": 12,
       "permission": { "edit": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "memory-paid": {
       "mode": "subagent",
       "model": "opencode-go/deepseek-v4-flash",
       "description": "Paid fallback repository memory maintainer when DeepSeek V4 Flash Free is unavailable, rate-limited, or over quota.",
-      "steps": 6,
+      "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "terminal-reader-paid": {
       "mode": "subagent",
       "model": "opencode-go/deepseek-v4-flash",
       "description": "Paid fallback terminal-output compressor when DeepSeek V4 Flash Free is unavailable, rate-limited, or over quota.",
-      "steps": 4,
+      "steps": 8,
       "permission": { "edit": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "log-reader-paid": {
       "mode": "subagent",
       "model": "opencode-go/deepseek-v4-flash",
       "description": "Paid fallback log compressor when DeepSeek V4 Flash Free is unavailable, rate-limited, or over quota.",
-      "steps": 4,
+      "steps": 8,
       "permission": { "edit": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "diff-reader-paid": {
       "mode": "subagent",
       "model": "opencode-go/deepseek-v4-flash",
       "description": "Paid fallback diff compressor when DeepSeek V4 Flash Free is unavailable, rate-limited, or over quota.",
-      "steps": 4,
+      "steps": 8,
       "permission": { "edit": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny" }
     }
   }
