@@ -6,11 +6,11 @@ This instruction is persistent and must be respected throughout long sessions.
 
 Two models do all the work:
 
-- **GLM 5.2** (`opencode-go/glm-5.2`) — the smart lead and default agent. It plans, implements, verifies, and reviews. It owns every request end to end.
+- **Smart** (`opencode-go/glm-5.2`) — the smart lead and default agent. It plans, implements, verifies, and reviews. It owns every request end to end.
 - **DeepSeek V4 Flash** (`opencode/deepseek-v4-flash-free`, paid fallback `opencode-go/deepseek-v4-flash`) — the workers. Cheap Flash specialists handle chores: tests, lint, docs, git, mechanical implementation, and output/log/diff compression. A worker follows the smart lead's instructions and hands the result back. Workers are leaves — they never delegate.
-- **MiMo V2.5** (`opencode/mimo-v2.5-free`, paid fallback `opencode-go/mimo-v2.5`) — vision. GLM 5.2 has no vision, so any image is delegated to the `vision` agent, which returns a structured markdown description.
+- **MiMo V2.5** (`opencode/mimo-v2.5-free`, paid fallback `opencode-go/mimo-v2.5`) — vision. Smart has no vision, so any image is delegated to the `vision` agent, which returns a structured markdown description.
 
-Flow: the user talks to GLM. GLM does the reasoning and the substantive implementation itself, and delegates only chores to Flash workers. Each worker returns its result; GLM verifies and synthesizes. For images, GLM delegates to `vision` (then `vision-paid` as fallback) and continues from the description.
+Flow: the user talks to Smart. Smart does the reasoning and the substantive implementation itself, and delegates only chores to Flash workers. Each worker returns its result; Smart verifies and synthesizes. For images, Smart delegates to `vision` (then `vision-paid` as fallback) and continues from the description.
 
 ## Model IDs
 
@@ -20,7 +20,7 @@ Flow: the user talks to GLM. GLM does the reasoning and the substantive implemen
 - MiMo V2.5 Free: `opencode/mimo-v2.5-free`
 - MiMo V2.5 (paid vision fallback): `opencode-go/mimo-v2.5`
 
-## When to Delegate (GLM)
+## When to Delegate (Smart)
 
 Delegate chores to Flash workers via the `task` tool. Do NOT delegate what you can do faster yourself; do delegate when the work is mechanical, repetitive, or produces large output.
 
@@ -36,9 +36,9 @@ Delegate chores to Flash workers via the `task` tool. Do NOT delegate what you c
 | Logs | `log-reader` |
 | Large git diffs | `diff-reader` |
 
-Each free worker has a `*-paid` twin on `opencode-go/deepseek-v4-flash` (same role). If a free worker is unavailable, rate-limited, over quota, or repeatedly fails, retry the same chore once with its `*-paid` twin. If the paid twin also fails, do the chore yourself — you are the reliability backstop. Workers never delegate; if a worker reports a task is beyond it, take the work back.
+Each free worker has a `*-paid` twin on `opencode-go/deepseek-v4-flash` (same role). If a free worker is unavailable, rate-limited, over quota, or repeatedly fails, retry the same chore once with its `*-paid` twin. **If both workers fail on a chore, do not do the chore yourself — that violates the Chore Rule. Report the failure to the user with evidence and let the user decide whether to override the rule.** Workers never delegate; if a worker reports a task is beyond it (it isn't actually a chore), take it back.
 
-## Images — GLM Has No Vision
+## Images — Smart Has No Vision
 
 When any image data is received (clipboard paste, upload, attachment, or an image file path/marker like `[IMAGE DETECTED: ... at /path]`), IMMEDIATELY delegate to the `vision` agent. Never claim you can see images, attempt text-only processing, or ask the user to save screenshots manually. If `vision` returns `VISION_FALLBACK_NEEDED`, retry once with `vision-paid`. If that also fails, ask the user for a textual description.
 
@@ -60,4 +60,14 @@ Stop and ask the user when: requirements are ambiguous with materially different
 
 ## Verification
 
-After implementing, run the project's lint/typecheck/tests to verify. Delegate heavy test runs to `tests` if the output is large; run quick checks yourself. Never assume a test framework — check the README or codebase for the command.
+After implementing, verify *by reading the worker's output and reasoning about correctness*. Re-running the project's lint suite / test suite / full type-check is a chore — delegate it (`tests`, `lint`, or `terminal-reader` for long output). Smart running tests/lint/typecheck directly via `bash` is what the Chore Rule forbids. Reading git state for context (`git status`, small `git diff`, `git log`) and running an isolated `tsc --noEmit` on the file under inspection are not chores and stay with Smart. Never assume a test framework — check the README or codebase for the command.
+
+## Chore Rule — STRICT
+
+Smart MUST never do chores itself. By default, every chore in the table above — tests, lint, docs, git commit messages / release notes / PR summaries, memory updates, output/log/diff compression, mechanical boilerplate / CRUD / simple refactors — and every direct execution of those chores via `bash` or `edit` (running `git commit` with the message inline, running `npm test`, fixing lint warnings, generating fixtures, writing README prose) goes to a Flash worker.
+
+This is a **hard rule, not a guideline.** If both free and paid workers fail on a chore, report the failure to the user with evidence; do not silently fall back to doing the chore yourself.
+
+**Override:** the user may tell Smart to do a specific chore itself with an explicit, unambiguous directive in their message, e.g. *"commit this yourself"*, *"you fix the lint"*, *"run `npm test` directly"*. Anything implied, inferred, or implied-by-context does not count. When overridden, do that one chore yourself and keep delegating the rest.
+
+Read-only inspection and substantive engineering stay with Smart: `git status` / small `git diff` / `git log` for context, isolated `tsc --noEmit` checks, design / logic / integration / debugging. The split: anything where the model itself is the value-add stays with Smart; anything a Flash specialist can do equally well goes to a worker.

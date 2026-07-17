@@ -1,6 +1,6 @@
 /**
  * image-router.js — Intercepts image attachments in messages to the
- * text-only smart-lead agent (glm) and replaces them with text markers so
+ * text-only smart-lead agent (smart) and replaces them with text markers so
  * the model can delegate to the vision agent instead of processing images.
  *
  * OpenCode TUI embeds pasted clipboard images as `data:<mime>;base64,…`
@@ -25,7 +25,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const TEXT_ONLY_LEAD_IDS = new Set(["glm"]);
+const TEXT_ONLY_LEAD_IDS = new Set(["smart"]);
 const PRT_PREFIX = "prt_";
 const TOOL_OUTPUT_DIR = path.join(
   os.homedir(),

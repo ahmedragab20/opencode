@@ -5,17 +5,17 @@ Personal configuration for [opencode](https://opencode.ai), built around a simpl
 ## Architecture — Smart Leads, Workers Follow
 
 ```
-User → glm (GLM 5.2) — the smart lead. Plans, implements, verifies, reviews.
+User → smart (Smart) — the smart lead. Plans, implements, verifies, reviews.
   ├─ Chores → Flash workers (DeepSeek V4 Flash Free): tests, lint, docs, git,
   │           worker, memory, terminal-reader, log-reader, diff-reader
-  │           → each hands its result back to glm
+  │           → each hands its result back to smart
   │           → if a free worker is down, retry once with its *-paid twin
-  │             (DeepSeek V4 Flash, opencode-go) before glm does it itself
+  │             (DeepSeek V4 Flash, opencode-go) before smart does it itself
   └─ Images → vision (MiMo V2.5 Free) → vision-paid (MiMo V2.5) fallback
-              → hands a structured markdown description back to glm
+              → hands a structured markdown description back to smart
 ```
 
-GLM 5.2 owns every request end to end. It does the reasoning and substantive implementation itself and delegates only mechanical chores to cheap Flash workers, which follow its instructions and hand results back. Each free worker has a `*-paid` twin (same role, paid DeepSeek V4 Flash) for one retry when the free tier is unavailable. GLM 5.2 has no vision, so images go to the `vision` agent (with `vision-paid` as fallback).
+Smart owns every request end to end. It does the reasoning and substantive implementation itself and delegates only mechanical chores to cheap Flash workers, which follow its instructions and hand results back. Each free worker has a `*-paid` twin (same role, paid DeepSeek V4 Flash) for one retry when the free tier is unavailable. Smart has no vision, so images go to the `vision` agent (with `vision-paid` as fallback).
 
 > **Accuracy overrides cost.** Never choose a cheaper path if it increases the chance of incorrect implementation, unsafe command, or data loss.
 
@@ -23,7 +23,7 @@ GLM 5.2 owns every request end to end. It does the reasoning and substantive imp
 
 | Agent | Model | Mode | Role |
 |-------|-------|------|------|
-| `glm` ★ | `opencode-go/glm-5.2` | primary | Smart lead: plans, implements, verifies, reviews; delegates chores + images |
+| `smart` ★ | `opencode-go/glm-5.2` | primary | Smart lead: plans, implements, verifies, reviews; delegates chores + images |
 | `worker` | `opencode/deepseek-v4-flash-free` | subagent | Mechanical boilerplate, CRUD, mocks, simple refactors |
 | `worker-paid` | `opencode-go/deepseek-v4-flash` | subagent | Paid fallback for `worker` |
 | `tests` | `opencode/deepseek-v4-flash-free` | subagent | Tests, snapshots, fixtures, mocks |
@@ -45,7 +45,7 @@ GLM 5.2 owns every request end to end. It does the reasoning and substantive imp
 | `vision` | `opencode/mimo-v2.5-free` | subagent | Screenshots, OCR, diagrams → structured markdown |
 | `vision-paid` | `opencode-go/mimo-v2.5` | subagent | Paid vision fallback when MiMo Free is unavailable |
 
-★ = default/primary agent. `*-paid` = one paid retry for the free worker before GLM takes over.
+★ = default/primary agent. `*-paid` = one paid retry for the free worker before Smart takes over.
 
 ## Model Inventory
 
@@ -63,7 +63,7 @@ The OpenAI provider is disabled (`disabled_providers: ["openai"]`).
 
 | Plugin | File | Role |
 |--------|------|------|
-| `image-router` | `plugins/image-router.js` | Strips image data from messages to the text-only `glm` lead, writes the image to disk, and inserts `[IMAGE DETECTED]` markers so glm can delegate to `vision` |
+| `image-router` | `plugins/image-router.js` | Strips image data from messages to the text-only `smart` lead, writes the image to disk, and inserts `[IMAGE DETECTED]` markers so smart can delegate to `vision` |
 | `herdr-agent-state` | `plugins/herdr-agent-state.js` | herdr workspace + agent state integration (managed by herdr) |
 
 ## Structure

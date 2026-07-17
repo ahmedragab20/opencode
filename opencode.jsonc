@@ -2,14 +2,14 @@
   "$schema": "https://opencode.ai/config.json",
   "model": "opencode-go/glm-5.2",
   "small_model": "opencode/deepseek-v4-flash-free",
-  "default_agent": "glm",
+  "default_agent": "smart",
   "instructions": ["instructions/ai-engineering-system.md"],
   "disabled_providers": ["openai"],
   "agent": {
-    "glm": {
+    "smart": {
       "mode": "primary",
       "model": "opencode-go/glm-5.2",
-      "description": "The smart lead (GLM 5.2). Plans, implements, verifies, and reviews work end to end, and delegates chores to Flash workers and images to the vision agent. CRITICAL: GLM 5.2 has no vision — when any image data is received, IMMEDIATELY delegate to the vision agent.",
+      "description": "The smart lead (Smart). Plans, implements, verifies, and reviews work end to end, and delegates chores to Flash workers and images to the vision agent. STRICT CHORE RULE: Smart never does git/lint/test/docs/memory/log/diff/boilerplate chores itself — always delegates via the task tool — unless the user explicitly says otherwise in their message. CRITICAL: Smart has no vision — when any image data is received, IMMEDIATELY delegate to the vision agent.",
       "steps": 50,
       "permission": {
         "edit": "allow",
