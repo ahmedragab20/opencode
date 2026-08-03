@@ -23,7 +23,7 @@ Smart owns every request end to end. It does the reasoning and substantive imple
 
 | Agent | Model | Mode | Role |
 |-------|-------|------|------|
-| `smart` ★ | `opencode-go/glm-5.2` | primary | Smart lead: plans, implements, verifies, reviews; delegates chores + images |
+| `smart` ★ | `opencode-go/deepseek-v4-flash` | primary | Smart lead: plans, implements, verifies, reviews; delegates chores + images |
 | `worker` | `opencode/deepseek-v4-flash-free` | subagent | Mechanical boilerplate, CRUD, mocks, simple refactors |
 | `worker-paid` | `opencode-go/deepseek-v4-flash` | subagent | Paid fallback for `worker` |
 | `tests` | `opencode/deepseek-v4-flash-free` | subagent | Tests, snapshots, fixtures, mocks |
@@ -51,9 +51,8 @@ Smart owns every request end to end. It does the reasoning and substantive imple
 
 | Model | Provider | Role |
 |-------|----------|------|
-| `opencode-go/glm-5.2` | Go bundle | Smart lead (paid) |
+| `opencode-go/deepseek-v4-flash` | Go bundle | Smart lead + chores/workers paid fallback |
 | `opencode/deepseek-v4-flash-free` | Zen bundle | Chores/workers (free) |
-| `opencode-go/deepseek-v4-flash` | Go bundle | Chores/workers paid fallback |
 | `opencode/mimo-v2.5-free` | Zen bundle | Vision (free) |
 | `opencode-go/mimo-v2.5` | Go bundle | Vision fallback (paid) |
 

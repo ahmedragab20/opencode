@@ -1,16 +1,31 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "opencode-go/glm-5.2",
+  "model": "opencode-go/deepseek-v4-flash",
   "small_model": "opencode/deepseek-v4-flash-free",
   "default_agent": "smart",
   "instructions": ["instructions/ai-engineering-system.md"],
   "disabled_providers": ["openai"],
+  "references": {
+    "diffing": {
+      "repository": "ahmedragab20/diffing",
+      "branch": "main",
+      "description": "Use for diffing CLI/MCP contracts, the plan/code review loop, comment lifecycle, and human-AI review workflow conventions"
+    }
+  },
+  "mcp": {
+    "diffing": {
+      "type": "local",
+      "command": ["diffing", "mcp"],
+      "enabled": true,
+      "timeout": 30000
+    }
+  },
   "agent": {
     "smart": {
       "mode": "primary",
-      "model": "opencode-go/glm-5.2",
-      "description": "The smart lead (Smart). Plans, implements, verifies, and reviews work end to end, and delegates chores to Flash workers and images to the vision agent. STRICT CHORE RULE: Smart never does git/lint/test/docs/memory/log/diff/boilerplate chores itself — always delegates via the task tool — unless the user explicitly says otherwise in their message. CRITICAL: Smart has no vision — when any image data is received, IMMEDIATELY delegate to the vision agent.",
-      "steps": 50,
+      "model": "opencode-go/deepseek-v4-flash",
+      "description": "The smart lead (Smart). Owns design, architecture, debugging, and the TDD bug-reproduction loop. Implements scoped work itself and routes chores (tests/lint/docs/git/memory/compression) directly to Flash workers. CRITICAL: Smart has no vision — any image data goes to the vision agent immediately. STRICT CHORE RULE: Smart never does chores itself.",
+      "steps": 65,
       "permission": {
         "edit": "allow",
         "bash": "allow",
@@ -39,69 +54,70 @@
           "terminal-reader-paid": "allow",
           "log-reader-paid": "allow",
           "diff-reader-paid": "allow"
-        }
+        },
+        "diffing_*": "allow"
       }
     },
     "worker": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
-      "description": "Low-risk mechanical implementation, boilerplate, CRUD, fixtures, mocks, and simple refactors. Follows the smart lead's instructions and hands back the result.",
+      "description": "Low-risk mechanical implementation, boilerplate, CRUD, fixtures, mocks, and simple refactors. Follows the lead's instructions and hands back the result.",
       "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "tests": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
-      "description": "Writes and updates tests, integration tests, snapshots, fixtures, and mocks. Follows the smart lead's instructions and hands back the result.",
+      "description": "Writes and updates tests, integration tests, snapshots, fixtures, and mocks. Follows the lead's instructions and hands back the result.",
       "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "lint": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
-      "description": "Handles formatting, lint, imports, and style without intentional runtime behavior changes. Follows the smart lead's instructions and hands back the result.",
+      "description": "Handles formatting, lint, imports, and style without intentional runtime behavior changes. Follows the lead's instructions and hands back the result.",
       "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "docs": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
-      "description": "Writes README content, markdown docs, comments, and documentation updates. Follows the smart lead's instructions and hands back the result.",
+      "description": "Writes README content, markdown docs, comments, and documentation updates. Follows the lead's instructions and hands back the result.",
       "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "git": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
-      "description": "Writes commit messages, release notes, PR summaries, and git change summaries. Follows the smart lead's instructions and hands back the result.",
+      "description": "Writes commit messages, release notes, PR summaries, and git change summaries. Follows the lead's instructions and hands back the result.",
       "steps": 12,
       "permission": { "edit": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "memory": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
-      "description": "Maintains rolling repository memory and refreshes project summaries after significant changes. Follows the smart lead's instructions and hands back the result.",
+      "description": "Maintains rolling repository memory and refreshes project summaries after significant changes. Follows the lead's instructions and hands back the result.",
       "steps": 12,
       "permission": { "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "terminal-reader": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
-      "description": "Compresses large terminal output into errors, warnings, first failure, likely root cause, and relevant files. Hands the compressed packet back to the smart lead.",
+      "description": "Compresses large terminal output into errors, warnings, first failure, likely root cause, and relevant files. Hands the compressed packet back to the lead.",
       "steps": 8,
       "permission": { "edit": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "log-reader": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
-      "description": "Compresses logs into repeated exceptions, timestamps, frequencies, and likely failing subsystem. Hands the compressed packet back to the smart lead.",
+      "description": "Compresses logs into repeated exceptions, timestamps, frequencies, and likely failing subsystem. Hands the compressed packet back to the lead.",
       "steps": 8,
       "permission": { "edit": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
     "diff-reader": {
       "mode": "subagent",
       "model": "opencode/deepseek-v4-flash-free",
-      "description": "Compresses large git diffs into changed APIs, risky files, behavior changes, and migration notes. Hands the compressed packet back to the smart lead.",
+      "description": "Compresses large git diffs into changed APIs, risky files, behavior changes, and migration notes. Hands the compressed packet back to the lead.",
       "steps": 8,
       "permission": { "edit": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny" }
     },
