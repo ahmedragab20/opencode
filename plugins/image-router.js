@@ -1,34 +1,28 @@
 /**
- * image-router.js — Intercepts image attachments in messages to the
- * text-only lead agent (smart) and replaces them with text markers so
- * the model can delegate to the vision agent instead of processing images.
- * Cursor is intentionally excluded — the Cursor lead uses the configured
- * model's native multimodal vision when available.
+ * image-router.js — For every primary lead (smart, cursor, otto):
+ * 1) strip image attachments from the lead message
+ * 2) write them to disk
+ * 3) auto-run vision (opencode-go/gpt-5.6-luna) in a child session
+ * 4) inject [VISION DESCRIPTION] so the lead can answer immediately
  *
- * OpenCode TUI embeds pasted clipboard images as `data:<mime>;base64,…`
- * URLs and never writes them to disk. The vision subagent relies on a
- * `clipboard-*.png` filename lookup under known temp roots, which fails
- * because the file does not exist there. This plugin decodes the data URL,
- * writes the image to `~/.local/share/opencode/tool-output/` (which the
- * vision agent has explicit read permission for via `external_directory`),
- * and emits a marker carrying both the basename and the absolute path so
- * vision can recover the bytes deterministically.
+ * Leads retain full tool access. This plugin only fixes delegation reliability
+ * and speed — it never denies permissions.
  *
- * OpenCode's part schema also requires `part.id` to start with `prt` and
- * `part.messageID` to start with `msg` (or be absent). Earlier versions of
- * this plugin prepended "img-" to the original id, producing
- * "img-prt_..." ids and triggering SchemaError on every paste. The plugin
- * preserves the original `prt_…` id when one exists, and only generates a
- * fresh id when the replacement does not have one.
+ * Speed path: pass file:// parts so the vision model sees the image natively
+ * (no read-tool round-trip). Fallback to vision-free on any Luna failure.
  */
 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL as toFileURL } from "node:url";
 
-const TEXT_ONLY_LEAD_IDS = new Set(["smart"]);
+const PRIMARY_LEAD_IDS = new Set(["smart", "cursor", "otto"]);
+const VISION_AGENT = "vision";
+const VISION_FREE_AGENT = "vision-free";
 const PRT_PREFIX = "prt_";
+/** Per-attempt budget. Primary then free fallback ⇒ worst case ~2× this. */
+const VISION_TIMEOUT_MS = 45_000;
 const TOOL_OUTPUT_DIR = path.join(
   os.homedir(),
   ".local",
@@ -64,9 +58,11 @@ function extForMime(mime) {
 }
 
 function uniqHash() {
-  return (
-    Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
-  );
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+}
+
+function pathToFileURL(filepath) {
+  return toFileURL(path.resolve(filepath)).href;
 }
 
 function decodeDataURL(url) {
@@ -101,24 +97,23 @@ function saveToToolOutput(mime, bytes) {
 
 function summarizeReplace(part) {
   const filename = part.filename || "pasted-image";
-  const ext = extForMime(part.mime);
-
   let savedFilename = filename;
   let savedPath = null;
+  let fileUrl = typeof part.url === "string" ? part.url : "";
 
-  const url = typeof part.url === "string" ? part.url : "";
-  if (url.startsWith("data:")) {
-    const decoded = decodeDataURL(url);
+  if (fileUrl.startsWith("data:")) {
+    const decoded = decodeDataURL(fileUrl);
     if (decoded && decoded.bytes.length > 0) {
       const saved = saveToToolOutput(decoded.mime || part.mime, decoded.bytes);
       if (saved) {
         savedFilename = saved.filename;
         savedPath = saved.filepath;
+        fileUrl = pathToFileURL(saved.filepath);
       }
     }
-  } else if (url.startsWith("file://")) {
+  } else if (fileUrl.startsWith("file://")) {
     try {
-      const real = fileURLToPath(url);
+      const real = fileURLToPath(fileUrl);
       savedFilename = path.basename(real);
       savedPath = real;
     } catch (_e) {
@@ -135,26 +130,191 @@ function summarizeReplace(part) {
     (savedPath ? " at " + savedPath : "") +
     "]";
 
-  return { marker, savedFilename, savedPath };
+  return {
+    marker,
+    savedFilename,
+    savedPath,
+    mime: part.mime,
+    fileUrl: fileUrl || (savedPath ? pathToFileURL(savedPath) : ""),
+  };
 }
 
-/**
- * Plugin: strip image attachments from messages destined for text-only lead agents.
- */
-const ImageRouterPlugin = async () => {
+function extractText(parts) {
+  if (!Array.isArray(parts)) return "";
+  return parts
+    .filter((part) => part && part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n")
+    .trim();
+}
+
+function extractTextFromPromptParts(parts) {
+  if (!Array.isArray(parts)) return "";
+  return parts
+    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("")
+    .trim();
+}
+
+function needsFallback(text) {
+  if (!text) return true;
+  return /VISION_FALLBACK_NEEDED/i.test(text);
+}
+
+function buildVisionPrompt(markers, userText) {
+  const lines = [
+    "Describe the pasted image(s) in structured markdown for the lead agent.",
+    "The image file(s) are attached to this message — look at them directly.",
+    "Only use the read tool if you cannot see an attachment; then read the absolute path from the markers.",
+    "Return only the description. No preamble about being a vision agent.",
+    "",
+    "Markers:",
+    ...markers,
+  ];
+  if (userText) {
+    lines.push("", "User message context:", userText);
+  }
+  return lines.join("\n");
+}
+
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(label + " timed out after " + ms + "ms"));
+    }, ms);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+async function runVisionOnChild(client, directory, childSessionID, agent, prompt, fileParts) {
+  const parts = [{ type: "text", text: prompt }];
+  for (const fp of fileParts) {
+    if (!fp.fileUrl || !fp.mime) continue;
+    parts.push({
+      type: "file",
+      mime: fp.mime,
+      filename: fp.savedFilename || "pasted-image",
+      url: fp.fileUrl,
+    });
+  }
+
+  const request = client.session.prompt({
+    path: { id: childSessionID },
+    query: { directory },
+    body: {
+      agent,
+      // Prefer native multimodal; keep read as a cheap recovery path only.
+      tools: {
+        bash: false,
+        edit: false,
+        task: false,
+        webfetch: false,
+        websearch: false,
+        todo: false,
+      },
+      parts,
+    },
+  });
+
+  const { data, error } = await withTimeout(
+    request,
+    VISION_TIMEOUT_MS,
+    "Vision subagent (" + agent + ")",
+  );
+
+  if (error) {
+    throw new Error(String(error));
+  }
+
+  return extractTextFromPromptParts(data?.parts ?? []);
+}
+
+async function delegateToVision(client, directory, parentSessionID, images, userText) {
+  const { data: child, error: createError } = await client.session.create({
+    body: {
+      parentID: parentSessionID,
+      title: "Vision parse",
+    },
+    query: { directory },
+  });
+
+  if (createError || !child?.id) {
+    throw new Error(
+      "Failed to create vision child session: " + String(createError ?? "no id"),
+    );
+  }
+
+  const markers = images.map((img) => img.marker);
+  const prompt = buildVisionPrompt(markers, userText);
+
+  let agentUsed = VISION_AGENT;
+  let text = "";
+  let primaryError = null;
+
+  try {
+    text = await runVisionOnChild(
+      client,
+      directory,
+      child.id,
+      VISION_AGENT,
+      prompt,
+      images,
+    );
+  } catch (err) {
+    primaryError = err instanceof Error ? err.message : String(err);
+    console.error("[image-router] vision failed, trying vision-free:", primaryError);
+  }
+
+  if (needsFallback(text) || primaryError) {
+    agentUsed = VISION_FREE_AGENT;
+    text = await runVisionOnChild(
+      client,
+      directory,
+      child.id,
+      VISION_FREE_AGENT,
+      prompt,
+      images,
+    );
+  }
+
+  if (!text || needsFallback(text)) {
+    throw new Error(
+      "Vision unavailable" +
+        (primaryError ? " (primary: " + primaryError + ")" : "") +
+        "; free fallback also failed or returned VISION_FALLBACK_NEEDED.",
+    );
+  }
+
+  return { text, agentUsed };
+}
+
+const ImageRouterPlugin = async (pluginInput) => {
+  const client = pluginInput?.client;
+  const directory = pluginInput?.directory;
+
   try {
     return {
-      "chat.message": async (_input, _output) => {
+      "chat.message": async (input, output) => {
         try {
-          const agent = _input && _input.agent;
-          if (!agent || !TEXT_ONLY_LEAD_IDS.has(agent)) return;
+          const agent = input && input.agent;
+          if (!agent || !PRIMARY_LEAD_IDS.has(agent)) return;
 
-          const parts = _output && _output.parts;
+          const parts = output && output.parts;
           if (!parts || !Array.isArray(parts) || parts.length === 0) return;
 
-          const sessionID = _input.sessionID || "";
+          const sessionID = input.sessionID || "";
           let parentMessageID = "";
           let replacedAny = false;
+          const images = [];
 
           for (let i = 0; i < parts.length; i++) {
             const part = parts[i];
@@ -167,7 +327,9 @@ const ImageRouterPlugin = async () => {
             if (part.type !== "file") continue;
             if (typeof part.mime !== "string" || !part.mime.startsWith("image/")) continue;
 
-            const { marker } = summarizeReplace(part);
+            const summarized = summarizeReplace(part);
+            images.push(summarized);
+
             const partMessageID = isValidMsgID(part.messageID)
               ? part.messageID
               : parentMessageID;
@@ -177,27 +339,78 @@ const ImageRouterPlugin = async () => {
               sessionID: sessionID,
               messageID: partMessageID,
               type: "text",
-              text: marker,
+              text: summarized.marker,
               synthetic: true,
             };
             replacedAny = true;
           }
 
-          if (replacedAny) {
+          if (!replacedAny) return;
+
+          const userText = extractText(parts);
+
+          let visionResult = null;
+          let visionError = null;
+
+          if (client?.session?.create && client?.session?.prompt && directory) {
+            try {
+              visionResult = await delegateToVision(
+                client,
+                directory,
+                sessionID,
+                images,
+                userText,
+              );
+            } catch (err) {
+              visionError = err instanceof Error ? err.message : String(err);
+              console.error("[image-router] vision delegation failed:", visionError);
+            }
+          } else {
+            visionError =
+              "OpenCode client unavailable in image-router plugin; lead must delegate to vision via task.";
+          }
+
+          if (visionResult?.text) {
+            parts.push({
+              id: freshPrtID("imgvis"),
+              sessionID: sessionID,
+              messageID: parentMessageID,
+              type: "text",
+              text:
+                "[VISION DESCRIPTION from " +
+                visionResult.agentUsed +
+                ":\n" +
+                visionResult.text +
+                "]",
+              synthetic: true,
+            });
+
             parts.push({
               id: freshPrtID("imginstr"),
               sessionID: sessionID,
               messageID: parentMessageID,
               type: "text",
               text:
-                "[SYSTEM: Pasted image attachments have been decoded and written to " +
+                "[SYSTEM: image-router already ran the vision subagent and injected [VISION DESCRIPTION] above. Prefer that description for your answer. You retain full tool access — do not re-run vision unless the description is missing or clearly wrong.]",
+              synthetic: true,
+            });
+          } else {
+            parts.push({
+              id: freshPrtID("imginstr"),
+              sessionID: sessionID,
+              messageID: parentMessageID,
+              type: "text",
+              text:
+                "[SYSTEM: Pasted image(s) were decoded to " +
                 TOOL_OUTPUT_DIR +
-                ". Each marker above includes an `at <absolute path>` suffix; the vision subagent must read the file at that path before parsing. Delegate to the `vision` agent via the task tool.]",
+                ". Vision auto-delegation failed: " +
+                (visionError ?? "unknown error") +
+                ". Your FIRST tool call MUST be task with agent `vision` (pass every marker path). If vision returns VISION_FALLBACK_NEEDED, retry once with `vision-free`. You retain full tool access.]",
               synthetic: true,
             });
           }
         } catch (innerErr) {
-          // Silently ignore — never let a plugin crash affect message delivery
+          console.error("[image-router] chat.message error:", innerErr);
         }
       },
     };

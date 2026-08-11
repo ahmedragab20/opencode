@@ -17,42 +17,46 @@
  * - The proxy listens on its own port (8789 by default via
  *   OPENCODE_CURSOR_OTTO_PROXY_PORT) so it does not collide with the
  *   cursor / cursor-code proxy on 8788.
- * - Otto already advertises image input on every model — no vision shim needed.
+ * - Image pastes are intercepted by image-router.js and routed to the vision
+ *   subagent — Otto models still advertise image input so OpenCode accepts
+ *   clipboard attachments before the router strips them.
+ *
+ * Startup is intentionally lazy:
+ * - Otto dist modules (including proxy.js) are imported on first use, not at
+ *   plugin evaluation time.
+ * - `config()` only seeds from a local disk cache / static placeholder and
+ *   never awaits Cursor network discovery or proxy bind.
+ * - Model discovery + proxy start happen in `auth.loader` / `provider.models`
+ *   (and optionally as a fire-and-forget background refresh after config).
  *
  * proxy.js computes its fixed port from OPENCODE_CURSOR_PROXY_PORT at module
- * evaluation time, and ESM static imports are hoisted above module-body
- * statements. The otto dist modules are therefore imported dynamically after
- * the port env is set so the proxy binds to this provider's port.
+ * evaluation time. The otto dist modules are therefore imported dynamically
+ * after the port env is set so the proxy binds to this provider's port.
  */
 
-// Plain node builtins — no proxy-port dependency, safe as static imports.
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-// @otto-assistant/opencode-cursor-oauth only exports "." — internal dist modules
-// must be loaded via file URLs (package "exports" blocks subpath imports).
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const OTTO_DIST = join(__dirname, "..", "node_modules", "@otto-assistant", "opencode-cursor-oauth", "dist");
-const importOtto = (moduleName) => import(pathToFileURL(join(OTTO_DIST, moduleName)).href);
+const OTTO_DIST = join(
+  __dirname,
+  "..",
+  "node_modules",
+  "@otto-assistant",
+  "opencode-cursor-oauth",
+  "dist",
+);
+const importOtto = (moduleName) =>
+  import(pathToFileURL(join(OTTO_DIST, moduleName)).href);
 
-// Otto's proxy.js reads OPENCODE_CURSOR_PROXY_PORT at module evaluation time.
-// cursor-oauth-opencode loads first and pins 8788 — force Otto's dedicated port
-// before importing Otto's proxy module (separate ESM instance from cursor-oauth).
 const OTTO_PROXY_PORT = (() => {
   const raw = process.env.OPENCODE_CURSOR_OTTO_PROXY_PORT ?? "8789";
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed > 0 && parsed < 65536 ? parsed : 8789;
 })();
 process.env.OPENCODE_CURSOR_PROXY_PORT = String(OTTO_PROXY_PORT);
-
-const { refreshCursorToken, RefreshTokenInvalidError } = await importOtto("auth.js");
-const { getCursorModels, LOGIN_PLACEHOLDER_MODELS, loginPlaceholderModels, resolveCursorModelSelection } = await importOtto("models.js");
-const { startProxy } = await importOtto("proxy.js");
-const { CURSOR_SELECTION_HEADER, encodeCursorModelSelection } = await importOtto("model-selection.js");
-const { startCursorBrowserLogin } = await importOtto("auth-login.js");
-const { log } = await importOtto("log.js");
 
 const PROVIDER_ID = "cursor-otto";
 const AUTH_KEY = "cursor";
@@ -68,83 +72,178 @@ const GENERATED_VARIANT_KEYS = [
   "xhigh",
   "max",
 ];
-// Base URL OpenCode uses for the statically-declared provider. It points at
-// the proxy's fixed port so requests reach the local proxy (OpenCode resolves
-// the base URL from static config, not from the auth loader).
 const CURSOR_BASE_URL = `http://localhost:${OTTO_PROXY_PORT}/v1`;
+const MODEL_CACHE_PATH = join(
+  process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
+  "opencode-cursor",
+  "otto-models.json",
+);
+const MODEL_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-async function loadCursorRuntime(input, getAuth, provider, onModels) {
-  // The cursor-otto provider owns no credentials of its own: fall back to the
-  // shared `cursor` store whenever the provider-level auth is missing.
+/** Static seed so config never needs Otto imports or network. */
+const STATIC_SEED_MODELS = [
+  {
+    id: DEFAULT_MODEL_ID,
+    name: "Cursor (loading models…)",
+    reasoning: false,
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+    variants: {},
+  },
+];
+
+/** @type {Promise<any> | null} */
+let ottoModulesPromise = null;
+
+function loadOttoModules() {
+  if (!ottoModulesPromise) {
+    // Port env must be set before proxy.js evaluates (done above at module load).
+    ottoModulesPromise = Promise.all([
+      importOtto("auth.js"),
+      importOtto("models.js"),
+      importOtto("proxy.js"),
+      importOtto("model-selection.js"),
+      importOtto("log.js"),
+    ]).then(([auth, models, proxy, selection, logMod]) => ({
+      refreshCursorToken: auth.refreshCursorToken,
+      RefreshTokenInvalidError: auth.RefreshTokenInvalidError,
+      getCursorModels: models.getCursorModels,
+      LOGIN_PLACEHOLDER_MODELS: models.LOGIN_PLACEHOLDER_MODELS,
+      resolveCursorModelSelection: models.resolveCursorModelSelection,
+      startProxy: proxy.startProxy,
+      CURSOR_SELECTION_HEADER: selection.CURSOR_SELECTION_HEADER,
+      encodeCursorModelSelection: selection.encodeCursorModelSelection,
+      log: logMod.log,
+    }));
+  }
+  return ottoModulesPromise;
+}
+
+function readDiskModelCache() {
+  try {
+    const raw = JSON.parse(readFileSync(MODEL_CACHE_PATH, "utf8"));
+    if (!raw || typeof raw !== "object") return null;
+    if (!Array.isArray(raw.models) || raw.models.length === 0) return null;
+    const savedAt = typeof raw.savedAt === "number" ? raw.savedAt : 0;
+    if (savedAt > 0 && Date.now() - savedAt > MODEL_CACHE_MAX_AGE_MS) return null;
+    const models = raw.models.filter(
+      (model) =>
+        model &&
+        typeof model === "object" &&
+        typeof model.id === "string" &&
+        typeof model.name === "string",
+    );
+    return models.length > 0 ? models : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDiskModelCache(models) {
+  try {
+    mkdirSync(dirname(MODEL_CACHE_PATH), { recursive: true });
+    const serializable = models.map((model) => ({
+      id: model.id,
+      name: model.name,
+      reasoning: !!model.reasoning,
+      contextWindow: model.contextWindow > 0 ? model.contextWindow : 200_000,
+      maxTokens: model.maxTokens > 0 ? model.maxTokens : 64_000,
+      variants:
+        model.variants && typeof model.variants === "object" ? model.variants : {},
+    }));
+    writeFileSync(
+      MODEL_CACHE_PATH,
+      `${JSON.stringify({ savedAt: Date.now(), models: serializable }, null, 2)}\n`,
+    );
+  } catch {
+    // best-effort cache
+  }
+}
+
+/**
+ * Sync seed for config(): prefer yesterday's discovered catalog, else a
+ * single placeholder so the provider is not dropped from provider.list().
+ */
+function resolveConfigModelsSync() {
+  return readDiskModelCache() ?? STATIC_SEED_MODELS;
+}
+
+async function resolveAccessToken(input, getAuth, otto) {
   let auth = await getAuth();
   if (!isCursorOAuthAuth(auth)) {
     auth = readStoredCursorAuth();
   }
   if (!isCursorOAuthAuth(auth)) return undefined;
-  // Ensure we have a valid access token, refreshing if expired.
-  // Refresh failures must NOT throw out of provider/auth hooks, or
-  // OpenCode's provider.list() fails entirely and every Discord /model and
-  // /login call surfaces "Failed to fetch providers". Return undefined so
-  // Cursor Otto is simply treated as unavailable until the user re-runs login.
+
   let accessToken = auth.access;
   if (!accessToken || auth.expires < Date.now()) {
     try {
-      const refreshed = await refreshCursorToken(auth.refresh);
-      await input.client.auth.set({
-        path: { id: AUTH_KEY },
-        body: {
-          type: "oauth",
-          refresh: refreshed.refresh,
-          access: refreshed.access,
-          expires: refreshed.expires,
-        },
-      });
+      const refreshed = await otto.refreshCursorToken(auth.refresh);
+      const body = {
+        type: "oauth",
+        refresh: refreshed.refresh,
+        access: refreshed.access,
+        expires: refreshed.expires,
+      };
+      await input.client.auth.set({ path: { id: AUTH_KEY }, body });
+      writeStoredCursorAuth(body);
       accessToken = refreshed.access;
     } catch (err) {
-      const permanent = err instanceof RefreshTokenInvalidError;
+      const permanent = err instanceof otto.RefreshTokenInvalidError;
       const summary = err instanceof Error ? err.message : String(err);
-      log.error(`[cursor-otto] Cursor token refresh ${permanent ? "rejected (re-login required)" : "failed (transient)"}: ${summary}`);
+      otto.log.error(
+        `[cursor-otto] Cursor token refresh ${permanent ? "rejected (re-login required)" : "failed (transient)"}: ${summary}`,
+      );
       return undefined;
     }
   }
-  // Never advertise the hardcoded FALLBACK catalog through the provider hook —
-  // OpenChamber's provider page would show ~14 stale models instead of the live
-  // Cursor catalog. If discovery fails, keep a login placeholder until retry.
-  const discovered = await getCursorModels(accessToken, {
-    allowFallback: false,
-  });
-  const models = discovered.length > 0 ? discovered : LOGIN_PLACEHOLDER_MODELS;
+  return accessToken;
+}
+
+/**
+ * Start proxy quickly using disk-cached / placeholder models. Live Cursor
+ * catalog discovery is refreshed in the background so auth.loader / first
+ * chat turn do not block on AvailableModels.
+ */
+async function loadCursorRuntime(input, getAuth, provider, onModels) {
+  const otto = await loadOttoModules();
+  const accessToken = await resolveAccessToken(input, getAuth, otto);
+  if (!accessToken) return undefined;
+
+  const cached = readDiskModelCache();
+  const models = cached ?? otto.LOGIN_PLACEHOLDER_MODELS;
   onModels?.(models);
-  // startProxy() is idempotent: if the proxy is already running on the same
-  // port it returns immediately. If it was stopped, it binds a new random port.
-  const port = await startProxy(async () => {
-    let currentAuth = await getAuth();
-    if (!isCursorOAuthAuth(currentAuth)) {
-      currentAuth = readStoredCursorAuth();
-    }
-    if (!isCursorOAuthAuth(currentAuth)) {
-      throw new Error("Cursor auth not configured");
-    }
-    if (!currentAuth.access || currentAuth.expires < Date.now()) {
-      const refreshed = await refreshCursorToken(currentAuth.refresh);
-      await input.client.auth.set({
-        path: { id: AUTH_KEY },
-        body: {
-          type: "oauth",
-          refresh: refreshed.refresh,
-          access: refreshed.access,
-          expires: refreshed.expires,
-        },
-      });
-      return refreshed.access;
-    }
-    return currentAuth.access;
+
+  const port = await otto.startProxy(async () => {
+    const token = await resolveAccessToken(input, getAuth, otto);
+    if (!token) throw new Error("Cursor auth not configured");
+    return token;
   }, models);
+
   const providerModels = buildCursorProviderModels(models, port);
   if (provider) {
     provider.models = providerModels;
   }
-  return { port, providerModels };
+
+  // Non-blocking catalog refresh (mirrors cursor-oauth-opencode).
+  void otto
+    .getCursorModels(accessToken, { allowFallback: false })
+    .then((discovered) => {
+      if (!discovered || discovered.length === 0) return;
+      onModels?.(discovered);
+      writeDiskModelCache(discovered);
+      const refreshed = buildCursorProviderModels(discovered, port);
+      if (provider) provider.models = refreshed;
+      otto.log.info(
+        `[cursor-otto] background-discovered ${discovered.length} Cursor models`,
+      );
+    })
+    .catch((err) => {
+      const summary = err instanceof Error ? err.message : String(err);
+      otto.log.warn(`[cursor-otto] background model discovery failed: ${summary}`);
+    });
+
+  return { port, providerModels, models };
 }
 
 function isCursorOAuthAuth(auth) {
@@ -158,11 +257,10 @@ function isCursorOAuthAuth(auth) {
 }
 
 /**
- * Mirror shared Cursor OAuth into the cursor-otto provider and eagerly start
- * the local Otto proxy so the first chat turn does not hit a dead localhost URL
- * before auth.loader runs.
+ * Mirror shared Cursor OAuth into the cursor-otto provider entry only.
+ * Does not import Otto modules, start the proxy, or hit the Cursor API.
  */
-async function ensureOttoRuntime(input, onModels) {
+async function mirrorSharedCursorAuth(input) {
   const stored = readStoredCursorAuth();
   if (!stored) return;
   try {
@@ -170,15 +268,8 @@ async function ensureOttoRuntime(input, onModels) {
       path: { id: PROVIDER_ID },
       body: stored,
     });
-  } catch (err) {
-    const summary = err instanceof Error ? err.message : String(err);
-    log.warn(`[cursor-otto] failed to mirror shared Cursor auth: ${summary}`);
-  }
-  try {
-    await loadCursorRuntime(input, readStoredCursorAuth, undefined, onModels);
-  } catch (err) {
-    const summary = err instanceof Error ? err.message : String(err);
-    log.warn(`[cursor-otto] failed to start Otto proxy during config: ${summary}`);
+  } catch {
+    // Non-fatal: auth.loader will bootstrap from the shared cursor store.
   }
 }
 
@@ -193,43 +284,58 @@ export const CursorOttoPlugin = async (input) => {
     modelCatalog = models;
   };
   return {
-    // Newer OpenCode releases (1.15.x) build the model catalog/menu only from
-    // statically declared `config.provider.<id>` entries (or models.dev) and no
-    // longer surface a plugin's dynamic `provider.models()` hook there. Seed a
-    // concrete `cursor-otto` provider here so it always appears, without
-    // clobbering any user-defined overrides. The dynamic hook + auth loader
-    // below still refine connection details and models at runtime. When logged
-    // out, seed a login placeholder model so OpenCode does not drop the
-    // provider (empty model maps are removed from provider.list). After OAuth,
-    // discovery replaces the placeholder.
+    // Seed static/cached provider config only. Network discovery + proxy bind
+    // are deferred to auth.loader / provider.models so TUI boot stays fast.
     async config(config) {
-      const models = await resolveConfigModels();
+      const models = resolveConfigModelsSync();
       rememberModels(models);
       ensureProviderConfig(config, models);
-      await ensureOttoRuntime(input, rememberModels);
+      // Fire-and-forget auth mirror only. Catalog refresh + proxy start stay on
+      // auth.loader / provider.models / chat.params so boot does not import the
+      // heavy Otto runtime or hit Cursor's AvailableModels API.
+      void mirrorSharedCursorAuth(input).catch(() => {});
     },
     "chat.headers": async (hookInput, output) => {
       if (hookInput.model.providerID !== PROVIDER_ID) return;
+      const otto = await loadOttoModules();
       const messageModel = hookInput.message.model;
-      const variant = typeof messageModel.variant === "string" ? messageModel.variant : undefined;
-      const selected = resolveCursorModelSelection(modelCatalog, hookInput.model.id, variant);
+      const variant =
+        typeof messageModel.variant === "string" ? messageModel.variant : undefined;
+      const selected = otto.resolveCursorModelSelection(
+        modelCatalog,
+        hookInput.model.id,
+        variant,
+      );
       if (selected) {
-        output.headers[CURSOR_SELECTION_HEADER] =
-          encodeCursorModelSelection(selected);
+        output.headers[otto.CURSOR_SELECTION_HEADER] =
+          otto.encodeCursorModelSelection(selected);
       }
     },
     "chat.params": async (hookInput, output) => {
       if (hookInput.model.providerID !== PROVIDER_ID) return;
-      // The selected Cursor variant is routed through a private local header.
-      // Do not let OpenCode's generic reasoning defaults or our marker leak to
-      // the OpenAI-compatible SDK request body.
+      // Ensure the local proxy is up on first Otto chat turn (lazy start).
+      try {
+        await loadCursorRuntime(
+          input,
+          async () => readStoredCursorAuth(),
+          undefined,
+          rememberModels,
+        );
+      } catch {
+        // auth.loader / provider path will surface a clearer error if needed
+      }
       delete output.options.reasoningEffort;
       delete output.options[CURSOR_VARIANT_OPTION];
     },
     provider: {
       id: PROVIDER_ID,
       async models(provider, ctx) {
-        const runtime = await loadCursorRuntime(input, async () => ctx.auth, provider, rememberModels);
+        const runtime = await loadCursorRuntime(
+          input,
+          async () => ctx.auth,
+          provider,
+          rememberModels,
+        );
         return runtime?.providerModels ?? {};
       },
     },
@@ -239,7 +345,12 @@ export const CursorOttoPlugin = async (input) => {
       // `opencode auth login --provider cursor` (cursor-oauth-opencode), which
       // populates the shared `cursor` store this loader bootstraps from.
       async loader(getAuth, provider) {
-        const runtime = await loadCursorRuntime(input, getAuth, provider, rememberModels);
+        const runtime = await loadCursorRuntime(
+          input,
+          getAuth,
+          provider,
+          rememberModels,
+        );
         if (!runtime) return {};
         return {
           baseURL: `http://localhost:${runtime.port}/v1`,
@@ -249,7 +360,9 @@ export const CursorOttoPlugin = async (input) => {
               if (init.headers instanceof Headers) {
                 init.headers.delete("authorization");
               } else if (Array.isArray(init.headers)) {
-                init.headers = init.headers.filter(([key]) => key.toLowerCase() !== "authorization");
+                init.headers = init.headers.filter(
+                  ([key]) => key.toLowerCase() !== "authorization",
+                );
               } else {
                 delete init.headers["authorization"];
                 delete init.headers["Authorization"];
@@ -264,10 +377,16 @@ export const CursorOttoPlugin = async (input) => {
 };
 
 function buildCursorProviderModels(models, port) {
-  const providerModels = Object.fromEntries(models.map((model) => [model.id, buildProviderModel(model, model.id, port)]));
+  const providerModels = Object.fromEntries(
+    models.map((model) => [model.id, buildProviderModel(model, model.id, port)]),
+  );
   const defaultModel = selectDefaultCursorModel(models);
   if (defaultModel && !(DEFAULT_MODEL_ID in providerModels)) {
-    providerModels[DEFAULT_MODEL_ID] = buildProviderModel(defaultModel, DEFAULT_MODEL_ID, port);
+    providerModels[DEFAULT_MODEL_ID] = buildProviderModel(
+      defaultModel,
+      DEFAULT_MODEL_ID,
+      port,
+    );
   }
   return providerModels;
 }
@@ -285,25 +404,22 @@ function selectDefaultCursorModel(models) {
 function buildProviderModel(model, id, port) {
   const contextWindow = model.contextWindow > 0 ? model.contextWindow : 200_000;
   const maxTokens = model.maxTokens > 0 ? model.maxTokens : 64_000;
+  const hasVariants =
+    model.variants &&
+    typeof model.variants === "object" &&
+    Object.keys(model.variants).length > 0;
   return {
     id,
     providerID: PROVIDER_ID,
     api: {
-      // Send the catalog/alias id literally. For the "default" alias this means
-      // Cursor receives "default" and performs its own server-side model
-      // auto-selection and rate-limit routing. Pre-resolving it to a concrete
-      // model here would defeat that (see proxy.resolveProxyModelId).
       id,
       url: `http://localhost:${port}/v1`,
       npm: "@ai-sdk/openai-compatible",
     },
     name: id === DEFAULT_MODEL_ID ? `Default (${model.name})` : model.name,
-    // Cursor agent models accept image attachments (vision). OpenCode gates
-    // file/image parts client-side on these flags — leaving image:false made
-    // every Cursor model report "does not support Image input".
     capabilities: {
       temperature: true,
-      reasoning: id === DEFAULT_MODEL_ID ? false : model.reasoning && Object.keys(model.variants).length > 0,
+      reasoning: id === DEFAULT_MODEL_ID ? false : !!(model.reasoning && hasVariants),
       attachment: true,
       toolcall: true,
       input: {
@@ -342,10 +458,11 @@ function buildProviderModel(model, id, port) {
 }
 
 function buildRuntimeVariants(model) {
-  return Object.fromEntries(Object.keys(model.variants).map((key) => [
-    key,
-    { [CURSOR_VARIANT_OPTION]: key },
-  ]));
+  const variants =
+    model.variants && typeof model.variants === "object" ? model.variants : {};
+  return Object.fromEntries(
+    Object.keys(variants).map((key) => [key, { [CURSOR_VARIANT_OPTION]: key }]),
+  );
 }
 
 function buildConfigVariants(model) {
@@ -356,39 +473,32 @@ function buildConfigVariants(model) {
   return variants;
 }
 
-/**
- * Ensure OpenCode has a concrete `cursor-otto` provider declaration in its
- * config so the provider and its models appear in the model menu. Existing
- * user-defined fields and models are preserved; only missing pieces are filled
- * in. The seeded name is fixed to "Cursor Otto" (login happens through the
- * shared `cursor` provider, not this one).
- */
 function ensureProviderConfig(config, models) {
   if (!config || typeof config !== "object") return;
   const cfg = config;
   cfg.provider ??= {};
   const existing = cfg.provider[PROVIDER_ID] ?? {};
-  const existingOptions = existing.options && typeof existing.options === "object"
-    ? existing.options
-    : {};
-  const existingModels = existing.models && typeof existing.models === "object"
-    ? existing.models
-    : {};
-  const providerName = typeof existing.name === "string" && existing.name.trim()
-    ? existing.name
-    : "Cursor Otto";
+  const existingOptions =
+    existing.options && typeof existing.options === "object"
+      ? existing.options
+      : {};
+  const existingModels =
+    existing.models && typeof existing.models === "object"
+      ? existing.models
+      : {};
+  const providerName =
+    typeof existing.name === "string" && existing.name.trim()
+      ? existing.name
+      : "Cursor Otto";
   cfg.provider[PROVIDER_ID] = {
     ...existing,
     name: providerName,
     npm: existing.npm ?? OPENAI_COMPATIBLE_NPM,
     options: {
       baseURL: CURSOR_BASE_URL,
-      // Ensure OpenAI-compatible streams surface usage chunks to OpenCode's
-      // context meter (AI SDK includeUsage / stream_options.include_usage).
       includeUsage: true,
       ...existingOptions,
     },
-    // User-declared model entries win over the seeded defaults.
     models: {
       ...buildConfigModelEntries(models),
       ...existingModels,
@@ -396,92 +506,11 @@ function ensureProviderConfig(config, models) {
   };
 }
 
-/**
- * Resolve the model list used to seed the static provider config. Prefers the
- * full set discovered from Cursor (using the shared stored OAuth access token)
- * so the whole catalog shows up in the menu.
- *
- * When logged out — or when a stored token cannot discover models — seeds a
- * single login placeholder. OpenCode drops providers with zero models from
- * `provider.list()`, which would hide Cursor Otto in OpenChamber. We
- * intentionally never seed the hardcoded FALLBACK_MODELS catalog into the
- * provider UI: that advertised ~14 stale models as if they were the live
- * Cursor list (~50).
- *
- * Never throws.
- */
-async function resolveLoggedOutPlaceholder() {
-  // OpenChamber's provider detail page often skips plugin OAuth methods and
-  // shows a misleading API-key field. Start the same browser OAuth as
-  // `opencode auth login` and embed the URL in the placeholder model name.
-  // The completed login lands in the shared `cursor` auth.json entry.
-  try {
-    const pending = await startCursorBrowserLogin();
-    return loginPlaceholderModels(pending.url);
-  } catch (err) {
-    const summary = err instanceof Error ? err.message : String(err);
-    log.warn(`[cursor-otto] failed to start browser login: ${summary}`);
-    return LOGIN_PLACEHOLDER_MODELS;
-  }
-}
-
-async function resolveConfigModels() {
-  const stored = readStoredCursorAuth();
-  if (!stored) return resolveLoggedOutPlaceholder();
-  let accessToken = stored.access;
-  if (!accessToken || stored.expires < Date.now()) {
-    try {
-      const refreshed = await refreshCursorToken(stored.refresh);
-      writeStoredCursorAuth({
-        type: "oauth",
-        access: refreshed.access,
-        refresh: refreshed.refresh,
-        expires: refreshed.expires,
-      });
-      accessToken = refreshed.access;
-    } catch (err) {
-      const summary = err instanceof Error ? err.message : String(err);
-      log.warn(`[cursor-otto] config model discovery refresh failed: ${summary}`);
-      return resolveLoggedOutPlaceholder();
-    }
-  }
-  // Transient h2-bridge / Cursor API hiccups at plugin load used to fall
-  // straight to the login placeholder, leaving the provider with zero real
-  // models until the next restart (every model request fails with
-  // "Model not found"). Retry discovery briefly before giving up.
-  let discovered = [];
-  for (let attempt = 0; attempt < 3 && discovered.length === 0; attempt++) {
-    if (attempt > 0) {
-      await new Promise((r) => setTimeout(r, 1_000 * attempt));
-    }
-    try {
-      // Allow enough time for the HTTP/2 bridge + AvailableModels round-trip.
-      // The previous 4s budget often fell through to the hardcoded fallback list.
-      discovered = await withTimeout(getCursorModels(accessToken, { allowFallback: false }), 15_000);
-    } catch (err) {
-      const summary = err instanceof Error ? err.message : String(err);
-      log.warn(`[cursor-otto] Cursor model discovery failed (attempt ${attempt + 1}/3) for config: ${summary}`);
-    }
-  }
-  if (discovered.length > 0) {
-    log.info(`[cursor-otto] discovered ${discovered.length} Cursor models for provider config`);
-    return discovered;
-  }
-  log.warn("[cursor-otto] Cursor model discovery returned no models; seeding login placeholder");
-  return resolveLoggedOutPlaceholder();
-}
-
 function getOpencodeAuthPath() {
   const base = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
   return join(base, "opencode", "auth.json");
 }
 
-/**
- * Best-effort read of the shared Cursor OAuth entry (AUTH_KEY = "cursor") from
- * OpenCode's auth store. Returns undefined if missing or malformed. Expired
- * access tokens are still returned when a refresh token is present so callers
- * can refresh.
- */
 function readStoredCursorAuth() {
   try {
     const data = JSON.parse(readFileSync(getOpencodeAuthPath(), "utf8"));
@@ -516,26 +545,9 @@ function writeStoredCursorAuth(auth) {
       expires: auth.expires,
     };
     writeFileSync(authPath, `${JSON.stringify(data, null, 2)}\n`);
-  } catch (err) {
-    const summary = err instanceof Error ? err.message : String(err);
-    log.warn(`[cursor-otto] failed to persist refreshed Cursor auth: ${summary}`);
+  } catch {
+    // best-effort
   }
-}
-
-function withTimeout(promise, ms) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timeout")), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      }
-    );
-  });
 }
 
 function buildConfigModelEntries(models) {
@@ -545,15 +557,8 @@ function buildConfigModelEntries(models) {
     const maxTokens = model.maxTokens > 0 ? model.maxTokens : 64_000;
     entries[model.id] = {
       name: model.name,
-      // OpenCode prepends generic low/medium/high variants for reasoning-capable
-      // OpenAI-compatible models before merging custom variants. Marking this
-      // config descriptor non-reasoning keeps our explicit Cursor variant map
-      // authoritative, including its canonical presentation order. Cursor
-      // reasoning output and routing are handled by the local proxy.
       reasoning: false,
       tool_call: true,
-      // Required for OpenCode's static config path: without modalities.input
-      // including "image", attachments are stripped before they reach the proxy.
       modalities: {
         input: ["text", "image"],
         output: ["text"],
@@ -574,12 +579,10 @@ function buildConfigModelEntries(models) {
       variants: buildConfigVariants(model),
     };
   }
-  // Seed a "default" entry so OpenCode versions that build the model menu from
-  // static config still expose Cursor's auto-routing. The entry key ("default")
-  // is sent upstream verbatim, so Cursor selects/routes the model itself.
   const defaultModel = selectDefaultCursorModel(models);
   if (defaultModel && !(DEFAULT_MODEL_ID in entries)) {
-    const contextWindow = defaultModel.contextWindow > 0 ? defaultModel.contextWindow : 200_000;
+    const contextWindow =
+      defaultModel.contextWindow > 0 ? defaultModel.contextWindow : 200_000;
     const maxTokens = defaultModel.maxTokens > 0 ? defaultModel.maxTokens : 64_000;
     entries[DEFAULT_MODEL_ID] = {
       name: `Default (${defaultModel.name})`,
@@ -602,7 +605,9 @@ function buildConfigModelEntries(models) {
       options: {
         includeUsage: true,
       },
-      variants: Object.fromEntries(GENERATED_VARIANT_KEYS.map((key) => [key, { disabled: true }])),
+      variants: Object.fromEntries(
+        GENERATED_VARIANT_KEYS.map((key) => [key, { disabled: true }]),
+      ),
     };
   }
   return entries;
@@ -610,7 +615,6 @@ function buildConfigModelEntries(models) {
 
 // $/M token rates from cursor.com/docs/models-and-pricing
 const MODEL_COST_TABLE = {
-  // Anthropic
   "claude-4-sonnet": { input: 3, output: 15, cache: { read: 0.3, write: 3.75 } },
   "claude-4-sonnet-1m": { input: 6, output: 22.5, cache: { read: 0.6, write: 7.5 } },
   "claude-4.5-haiku": { input: 1, output: 5, cache: { read: 0.1, write: 1.25 } },
@@ -619,18 +623,15 @@ const MODEL_COST_TABLE = {
   "claude-4.6-opus": { input: 5, output: 25, cache: { read: 0.5, write: 6.25 } },
   "claude-4.6-opus-fast": { input: 30, output: 150, cache: { read: 3, write: 37.5 } },
   "claude-4.6-sonnet": { input: 3, output: 15, cache: { read: 0.3, write: 3.75 } },
-  // Cursor
   "composer-1": { input: 1.25, output: 10, cache: { read: 0.125, write: 0 } },
   "composer-1.5": { input: 3.5, output: 17.5, cache: { read: 0.35, write: 0 } },
   "composer-2": { input: 0.5, output: 2.5, cache: { read: 0.2, write: 0 } },
   "composer-2-fast": { input: 1.5, output: 7.5, cache: { read: 0.2, write: 0 } },
-  // Google
   "gemini-2.5-flash": { input: 0.3, output: 2.5, cache: { read: 0.03, write: 0 } },
   "gemini-3-flash": { input: 0.5, output: 3, cache: { read: 0.05, write: 0 } },
   "gemini-3-pro": { input: 2, output: 12, cache: { read: 0.2, write: 0 } },
   "gemini-3-pro-image": { input: 2, output: 12, cache: { read: 0.2, write: 0 } },
   "gemini-3.1-pro": { input: 2, output: 12, cache: { read: 0.2, write: 0 } },
-  // OpenAI
   "gpt-5": { input: 1.25, output: 10, cache: { read: 0.125, write: 0 } },
   "gpt-5-fast": { input: 2.5, output: 20, cache: { read: 0.25, write: 0 } },
   "gpt-5-mini": { input: 0.25, output: 2, cache: { read: 0.025, write: 0 } },
@@ -644,15 +645,12 @@ const MODEL_COST_TABLE = {
   "gpt-5.4": { input: 2.5, output: 15, cache: { read: 0.25, write: 0 } },
   "gpt-5.4-mini": { input: 0.75, output: 4.5, cache: { read: 0.075, write: 0 } },
   "gpt-5.4-nano": { input: 0.2, output: 1.25, cache: { read: 0.02, write: 0 } },
-  // xAI
   "grok-4-5": { input: 2, output: 6, cache: { read: 0.2, write: 0 } },
   "grok-4.20": { input: 2, output: 6, cache: { read: 0.2, write: 0 } },
   "grok-4-fast-reasoning": { input: 2, output: 6, cache: { read: 0.2, write: 0 } },
   "grok-4-0709": { input: 2, output: 6, cache: { read: 0.2, write: 0 } },
-  // Moonshot
   "kimi-k2.5": { input: 0.6, output: 3, cache: { read: 0.1, write: 0 } },
 };
-// Most-specific first
 const MODEL_COST_PATTERNS = [
   { match: (id) => /claude.*opus.*fast/i.test(id), cost: MODEL_COST_TABLE["claude-4.6-opus-fast"] },
   { match: (id) => /claude.*opus/i.test(id), cost: MODEL_COST_TABLE["claude-4.6-opus"] },
@@ -686,7 +684,10 @@ function estimateModelCost(modelId) {
   const normalized = modelId.toLowerCase();
   const exact = MODEL_COST_TABLE[normalized];
   if (exact) return exact;
-  const stripped = normalized.replace(/-(high|medium|low|preview|thinking|spark-preview)$/g, "");
+  const stripped = normalized.replace(
+    /-(high|medium|low|preview|thinking|spark-preview)$/g,
+    "",
+  );
   const strippedMatch = MODEL_COST_TABLE[stripped];
   if (strippedMatch) return strippedMatch;
   return MODEL_COST_PATTERNS.find((p) => p.match(normalized))?.cost ?? DEFAULT_COST;

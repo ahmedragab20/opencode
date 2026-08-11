@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "cursor": {
+      "plugin": {
+        "cloudIndex": {
+          "bootstrapOnLoad": false
+        },
+        "indexWatcher": {
+          "enabled": false
+        }
+      }
+    }
+  }
+}

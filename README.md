@@ -17,11 +17,10 @@ User → smart (default), cursor, or otto — the lead. Plans, implements, verif
   │           → each hands its result back to the lead
   │           → if a free worker is down, retry once with its *-paid twin
   │             (DeepSeek V4 Flash, opencode-go) before the lead does it itself
-  ├─ Images (smart only) → vision (MiMo V2.5 Free) → vision-paid (MiMo V2.5) fallback
-  └─ Images (cursor / otto) → lead model's native vision when available (no vision subagent)
+  ├─ Images (all leads) → image-router auto-runs vision (GPT 5.6 Luna) → vision-free fallback
 ```
 
-The lead owns every request end to end. It does the reasoning and substantive implementation itself and delegates only mechanical chores to cheap Flash workers, which follow its instructions and hand results back. Each free worker has a `*-paid` twin (same role, paid DeepSeek V4 Flash) for one retry when the free tier is unavailable. **Smart** has no vision, so its images go to the `vision` agent (with `vision-paid` as fallback). **Cursor** and **Otto** use the configured Cursor model's native vision when available and must not call `vision` / `vision-paid`.
+The lead owns every request end to end. It does the reasoning and substantive implementation itself and delegates only mechanical chores to cheap Flash workers, which follow its instructions and hand results back. Each free worker has a `*-paid` twin (same role, paid DeepSeek V4 Flash) for one retry when the free tier is unavailable. **All primary leads** (Smart, Cursor, Otto) have no native vision — `image-router` auto-delegates pasted images to `vision` (`opencode-go/gpt-5.6-luna`) and injects `[VISION DESCRIPTION]`; `vision-free` (`opencode/mimo-v2.5-free`) is the one-time fallback if Luna fails.
 
 > **Accuracy overrides cost.** Never choose a cheaper path if it increases the chance of incorrect implementation, unsafe command, or data loss.
 
@@ -47,15 +46,15 @@ opencode auth login --provider cursor
 
 Prefer native `cursor/*` models and tools when the Cursor lead is active. Change the lead model anytime via `agent.cursor.model` in `opencode.jsonc` (and the matching frontmatter in `agent/cursor.md`); it is not locked to a specific Cursor catalog entry.
 
-**Otto** uses the same OAuth token (`cursor` in `auth.json`) but a separate provider (`cursor-otto/*`) backed by `@otto-assistant/opencode-cursor-oauth`. Change the Otto lead model via `agent.otto.model` (default `cursor-otto/default`). No separate login — `opencode auth login --provider cursor` covers both Cursor and Otto.
+**Otto** uses the same OAuth token (`cursor` in `auth.json`) but a separate provider (`cursor-otto/*`) backed by `@otto-assistant/opencode-cursor-oauth`. Change the Otto lead model via `agent.otto.model` / `agent.otto.variant` (default `cursor-otto/grok-4.5` + `high`). No separate login — `opencode auth login --provider cursor` covers both Cursor and Otto.
 
 ## Agents
 
 | Agent | Model | Mode | Role |
 |-------|-------|------|------|
 | `smart` ★ | `opencode-go/deepseek-v4-flash` | primary | Smart lead (default): plans, implements, verifies, reviews; delegates chores + images |
-| `cursor` | `cursor/*` (see `agent.cursor.model`) | primary | Cursor lead (opt-in): same routing as Smart; subscription reasoning via cursor-oauth-opencode; native vision; delegates chores |
-| `otto` | `cursor-otto/*` (see `agent.otto.model`) | primary | Otto lead (opt-in): same routing as Smart; subscription reasoning via @otto-assistant bridge; native vision; delegates chores |
+| `cursor` | `cursor/*` (see `agent.cursor.model`) | primary | Cursor lead (opt-in): same routing as Smart; subscription reasoning via cursor-oauth-opencode; delegates images + chores |
+| `otto` | `cursor-otto/*` (see `agent.otto.model`) | primary | Otto lead (opt-in): same routing as Smart; subscription reasoning via @otto-assistant bridge; delegates images + chores |
 | `worker` | `opencode/deepseek-v4-flash-free` | subagent | Mechanical boilerplate, CRUD, mocks, simple refactors |
 | `worker-paid` | `opencode-go/deepseek-v4-flash` | subagent | Paid fallback for `worker` |
 | `tests` | `opencode/deepseek-v4-flash-free` | subagent | Tests, snapshots, fixtures, mocks |
@@ -74,8 +73,8 @@ Prefer native `cursor/*` models and tools when the Cursor lead is active. Change
 | `log-reader-paid` | `opencode-go/deepseek-v4-flash` | subagent | Paid fallback for `log-reader` |
 | `diff-reader` | `opencode/deepseek-v4-flash-free` | subagent | Compress diffs → changed APIs, risky files |
 | `diff-reader-paid` | `opencode-go/deepseek-v4-flash` | subagent | Paid fallback for `diff-reader` |
-| `vision` | `opencode/mimo-v2.5-free` | subagent | Screenshots, OCR, diagrams → structured markdown |
-| `vision-paid` | `opencode-go/mimo-v2.5` | subagent | Paid vision fallback when MiMo Free is unavailable |
+| `vision` | `opencode-go/gpt-5.6-luna` | subagent | Screenshots, OCR, diagrams → structured markdown |
+| `vision-free` | `opencode/mimo-v2.5-free` | subagent | Free MiMo vision fallback when Luna is unavailable |
 
 ★ = default/primary agent. `*-paid` = one paid retry for the free worker before Smart takes over.
 
@@ -87,8 +86,8 @@ Prefer native `cursor/*` models and tools when the Cursor lead is active. Change
 | `cursor/*` (configured) | Cursor subscription | Cursor lead (opt-in); set in `agent.cursor.model` |
 | `cursor-otto/*` (configured) | Cursor subscription (Otto bridge) | Otto lead (opt-in); set in `agent.otto.model` |
 | `opencode/deepseek-v4-flash-free` | Zen bundle | Chores/workers (free) |
-| `opencode/mimo-v2.5-free` | Zen bundle | Vision (free) |
-| `opencode-go/mimo-v2.5` | Go bundle | Vision fallback (paid) |
+| `opencode-go/gpt-5.6-luna` | Go bundle | Vision (all primary leads) |
+| `opencode/mimo-v2.5-free` | Zen bundle | Vision fallback (free) |
 
 The OpenAI provider is disabled (`disabled_providers: ["openai"]`).
 
@@ -98,8 +97,7 @@ The OpenAI provider is disabled (`disabled_providers: ["openai"]`).
 |--------|------|------|
 | `cursor-oauth-opencode` | (npm package) | Cursor OAuth provider for subscription-backed `cursor/*` and `cursor-code/*` models |
 | `cursor-otto` | `plugins/cursor-otto.js` | Separate `cursor-otto/*` provider using `@otto-assistant/opencode-cursor-oauth` runtime; shares OAuth with `cursor`; proxy on port 8789 |
-| `image-router` | `plugins/image-router.js` | Strips image data from messages to the text-only `smart` lead only, writes the image to disk, and inserts `[IMAGE DETECTED]` markers so smart can delegate to `vision`. Does not run for `cursor` or `otto`. |
-| `cursor-vision` | `plugins/cursor-vision.js` | Forces `attachment` / `input.image` on all `cursor` and `cursor-code` models so OpenCode does not strip clipboard images (cursor-oauth's vision allowlist is otherwise Smart-unrelated and too narrow for Grok 4.5). |
+| `image-router` | `plugins/image-router.js` | Strips image data from primary leads (`smart`, `cursor`, `otto`), writes files to disk, **auto-runs `vision`** with native attachments, injects `[VISION DESCRIPTION]`; falls back to `vision-free` — never denies lead access |
 | `herdr-agent-state` | `plugins/herdr-agent-state.js` | herdr workspace + agent state integration (managed by herdr) |
 
 ## Structure
@@ -108,5 +106,5 @@ The OpenAI provider is disabled (`disabled_providers: ["openai"]`).
 opencode.jsonc    — 23 agents
 agent/            — 23 agent definitions
 instructions/     — ai-engineering-system.md
-plugins/          — image-router.js, cursor-vision.js, cursor-otto.js, herdr-agent-state.js
+plugins/          — image-router.js, cursor-otto.js, herdr-agent-state.js
 ```
