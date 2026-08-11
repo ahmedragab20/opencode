@@ -1,5 +1,7 @@
 {
+  "type": "module",
   "dependencies": {
-    "@opencode-ai/plugin": "1.15.3"
+    "@opencode-ai/plugin": "1.15.3",
+    "@otto-assistant/opencode-cursor-oauth": "^2.2.0"
   }
 }

@@ -5,15 +5,17 @@ This instruction is persistent and respected throughout long sessions. It applie
 ## Architecture — two tiers
 
 - **Smart** (`opencode-go/deepseek-v4-flash`) — default lead. Owns design, architecture, multi-step reasoning, debugging, the TDD bug-reproduction loop, fix-writing, and all substantive implementation. Delegates chores to Flash workers directly.
-- **Cursor** (`cursor/*`, opt-in lead) — same routing and chore rule as Smart; reasoning model is the configured Cursor subscription model. Uses native multimodal vision when the model supports it.
+- **Cursor** (`cursor/*`, opt-in lead) — same routing and chore rule as Smart; reasoning model is the configured Cursor subscription model via `cursor-oauth-opencode`. Uses native multimodal vision when the model supports it.
+- **Otto** (`cursor-otto/*`, opt-in lead) — same routing and chore rule as Smart; reasoning model is the configured Cursor subscription model via `@otto-assistant/opencode-cursor-oauth` on the separate `cursor-otto` provider. Uses native multimodal vision when the model supports it. Shares OAuth with `cursor`.
 - **Worker** (`opencode/deepseek-v4-flash-free`, paid fallback `opencode-go/deepseek-v4-flash`) — leaves. Chores only: tests, lint, docs, git, fixtures, low-risk mechanical implementation / boilerplate / CRUD, output/log/diff compression. Workers never delegate.
 
-Plus **vision** (`opencode/mimo-v2.5-free`, paid fallback `opencode-go/mimo-v2.5`) for images — **Smart only**. Cursor must not use the vision subagent.
+Plus **vision** (`opencode/mimo-v2.5-free`, paid fallback `opencode-go/mimo-v2.5`) for images — **Smart only**. Cursor and Otto must not use the vision subagent.
 
 ## Model IDs
 
 - Smart: `opencode-go/deepseek-v4-flash`
 - Cursor: `cursor/*` (configured per `agent.cursor.model`, e.g. `cursor/grok-4.5-fast`)
+- Otto: `cursor-otto/*` (configured per `agent.otto.model`, e.g. `cursor-otto/default` or `cursor-otto/grok-4-5`)
 - Worker Free: `opencode/deepseek-v4-flash-free` — has `*-paid` twin on `opencode-go/deepseek-v4-flash`
 - Vision Free: `opencode/mimo-v2.5-free` — has `vision-paid` on `opencode-go/mimo-v2.5` (Smart image path only)
 
@@ -21,7 +23,7 @@ Plus **vision** (`opencode/mimo-v2.5-free`, paid fallback `opencode-go/mimo-v2.5
 
 Apply in order. First match wins.
 
-### Lead routing (Smart or Cursor receives the user's request)
+### Lead routing (Smart, Cursor, or Otto receives the user's request)
 
 1. **Lead does it.** Design, architecture, multi-step reasoning, root-cause analysis, debugging, the TDD bug-reproduction loop, fix-writing, and clear scoped implementation (features, refactors, integration glue, "wire up A and B", "implement this spec") — anything needing judgment.
 2. **Delegate directly to a Worker.** Tests, lint, docs, git, fixtures, low-risk mechanical implementation / boilerplate / CRUD, output compression.
@@ -89,11 +91,11 @@ If a free worker fails on a chore, retry the `*-paid` twin once. If both fail, r
 
 ## Images — vision constraints apply to Smart only
 
-These rules apply **only** when the active primary agent is **Smart**. Do not apply them to **Cursor** or any other non-Smart lead.
+These rules apply **only** when the active primary agent is **Smart**. Do not apply them to **Cursor**, **Otto**, or any other non-Smart lead.
 
 **Smart (no vision):** On any image (clipboard paste, upload, attachment, image path, `[IMAGE DETECTED: …]` marker), Smart IMMEDIATELY delegates to `vision`. If `vision` returns `VISION_FALLBACK_NEEDED`, retry once with `vision-paid`. If that fails, ask the user for a textual description. Never claim you can see images or ask the user to save screenshots.
 
-**Cursor (native vision):** Use the lead model's built-in multimodal vision for image attachments, pastes, and uploads. Do **not** call `vision` or `vision-paid`. If the active Cursor model truly cannot see an image, ask the user for a textual description — still do not route through the vision subagent.
+**Cursor / Otto (native vision):** Use the lead model's built-in multimodal vision for image attachments, pastes, and uploads. Do **not** call `vision` or `vision-paid`. If the active Cursor/Otto model truly cannot see an image, ask the user for a textual description — still do not route through the vision subagent.
 
 ## Accuracy first
 

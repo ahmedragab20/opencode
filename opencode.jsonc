@@ -3,7 +3,7 @@
   "model": "opencode-go/deepseek-v4-flash",
   "small_model": "opencode/deepseek-v4-flash-free",
   "default_agent": "smart",
-  "plugin": ["cursor-oauth-opencode"],
+  "plugin": ["cursor-oauth-opencode", "./plugins/cursor-otto.js"],
   "instructions": ["instructions/ai-engineering-system.md"],
   "disabled_providers": ["openai"],
   // Cursor lead uses native vision. Static modalities help before auth.loader;
@@ -30,6 +30,13 @@
             "output": ["text"]
           }
         }
+      }
+    },
+    "cursor-otto": {
+      "name": "Cursor Otto",
+      "options": {
+        "baseURL": "http://localhost:8789/v1",
+        "includeUsage": true
       }
     }
   },
@@ -90,6 +97,43 @@
       "mode": "primary",
       "model": "cursor/grok-4.5-fast",
       "description": "Cursor lead (opt-in). Same routing as Smart on Cursor subscription models (model is configurable). Implements scoped work itself and routes chores to Flash workers. Uses the lead model's native vision when available — do not use the vision subagent. STRICT CHORE RULE: never does chores itself.",
+      "steps": 65,
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "external_directory": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "task": {
+          "*": "deny",
+          "worker": "allow",
+          "tests": "allow",
+          "lint": "allow",
+          "docs": "allow",
+          "git": "allow",
+          "memory": "allow",
+          "terminal-reader": "allow",
+          "log-reader": "allow",
+          "diff-reader": "allow",
+          "vision": "deny",
+          "vision-paid": "deny",
+          "worker-paid": "allow",
+          "tests-paid": "allow",
+          "lint-paid": "allow",
+          "docs-paid": "allow",
+          "git-paid": "allow",
+          "memory-paid": "allow",
+          "terminal-reader-paid": "allow",
+          "log-reader-paid": "allow",
+          "diff-reader-paid": "allow"
+        },
+        "diffing_*": "allow"
+      }
+    },
+    "otto": {
+      "mode": "primary",
+      "model": "cursor-otto/default",
+      "description": "Otto lead (opt-in). Same routing as Smart on Cursor subscription models via cursor-otto (@otto-assistant bridge). Implements scoped work itself and routes chores to Flash workers. Uses the lead model's native vision when available — do not use the vision subagent. STRICT CHORE RULE: never does chores itself.",
       "steps": 65,
       "permission": {
         "edit": "allow",
