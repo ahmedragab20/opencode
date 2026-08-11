@@ -1,7 +1,9 @@
 /**
  * image-router.js — Intercepts image attachments in messages to the
- * text-only smart-lead agent (smart) and replaces them with text markers so
+ * text-only lead agent (smart) and replaces them with text markers so
  * the model can delegate to the vision agent instead of processing images.
+ * Cursor is intentionally excluded — the Cursor lead uses the configured
+ * model's native multimodal vision when available.
  *
  * OpenCode TUI embeds pasted clipboard images as `data:<mime>;base64,…`
  * URLs and never writes them to disk. The vision subagent relies on a
@@ -137,7 +139,7 @@ function summarizeReplace(part) {
 }
 
 /**
- * Plugin: strip image attachments from messages destined for the text-only smart-lead agent.
+ * Plugin: strip image attachments from messages destined for text-only lead agents.
  */
 const ImageRouterPlugin = async () => {
   try {
